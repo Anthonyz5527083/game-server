@@ -1,5 +1,6 @@
 # 私有上下文
 CLAUDE.local.md
+*.local.md
 
 # 密钥与本地配置
 .env
