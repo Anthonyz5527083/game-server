@@ -21,6 +21,13 @@ message Envelope {
 
     LoginReq login_req = 20;
     LoginResp login_resp = 21;
+
+    CreateRoomReq create_room_req = 30;
+    JoinRoomReq join_room_req = 31;
+    QuickMatchReq quick_match_req = 32;
+    LeaveRoomReq leave_room_req = 33;
+    RoomResp room_resp = 34;
+    RoomEvent room_event = 35;
   }
 }
 
@@ -33,6 +40,11 @@ enum Code {
   BAD_TOKEN = 10;         // token 格式不对或签名不对
   TOKEN_EXPIRED = 11;
   ALREADY_LOGGED_IN = 12; // 这条连接已经登录过了
+
+  ROOM_NOT_FOUND = 20;
+  ROOM_FULL = 21;
+  ALREADY_IN_ROOM = 22;   // 一个玩家同一时间只能在一个房间里
+  NOT_IN_ROOM = 23;
 }
 
 // Ping 兼作心跳:客户端定期发;服务端在 idle timeout 内收不到任何帧就踢人。
@@ -59,4 +71,42 @@ message LoginReq {
 message LoginResp {
   Code code = 1;
   uint64 player_id = 2; // 成功时是 token 里的玩家 ID
+}
+
+// ---------- 房间(登录之后才能发) ----------
+
+message CreateRoomReq {}
+
+message JoinRoomReq {
+  uint32 room_id = 1;
+}
+
+// QuickMatchReq:有没满的房间就进(按房间号从小到大找),没有就新建一个。
+message QuickMatchReq {}
+
+message LeaveRoomReq {}
+
+// RoomInfo 是一个房间在某一时刻的样子。
+message RoomInfo {
+  uint32 room_id = 1;
+  uint32 capacity = 2;
+  repeated uint64 members = 3; // 玩家 ID,按加入顺序
+}
+
+// RoomResp 是建房 / 加入 / 快速匹配 / 离开四种请求共用的应答。
+message RoomResp {
+  Code code = 1;
+  RoomInfo room = 2; // 成功时是操作之后的房间;离开时是刚离开的那个房间
+}
+
+// RoomEvent 推送给房间里的其他人。触发事件的那个人不收,他从 RoomResp 里知道结果。
+message RoomEvent {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    JOINED = 1;
+    LEFT = 2;
+  }
+  Kind kind = 1;
+  uint64 player_id = 2; // 谁进来了 / 谁走了
+  RoomInfo room = 3;    // 事件发生之后的房间
 }

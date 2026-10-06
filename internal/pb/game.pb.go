@@ -31,6 +31,10 @@ const (
 	Code_BAD_TOKEN         Code = 10 // token 格式不对或签名不对
 	Code_TOKEN_EXPIRED     Code = 11
 	Code_ALREADY_LOGGED_IN Code = 12 // 这条连接已经登录过了
+	Code_ROOM_NOT_FOUND    Code = 20
+	Code_ROOM_FULL         Code = 21
+	Code_ALREADY_IN_ROOM   Code = 22 // 一个玩家同一时间只能在一个房间里
+	Code_NOT_IN_ROOM       Code = 23
 )
 
 // Enum value maps for Code.
@@ -42,6 +46,10 @@ var (
 		10: "BAD_TOKEN",
 		11: "TOKEN_EXPIRED",
 		12: "ALREADY_LOGGED_IN",
+		20: "ROOM_NOT_FOUND",
+		21: "ROOM_FULL",
+		22: "ALREADY_IN_ROOM",
+		23: "NOT_IN_ROOM",
 	}
 	Code_value = map[string]int32{
 		"OK":                0,
@@ -50,6 +58,10 @@ var (
 		"BAD_TOKEN":         10,
 		"TOKEN_EXPIRED":     11,
 		"ALREADY_LOGGED_IN": 12,
+		"ROOM_NOT_FOUND":    20,
+		"ROOM_FULL":         21,
+		"ALREADY_IN_ROOM":   22,
+		"NOT_IN_ROOM":       23,
 	}
 )
 
@@ -80,6 +92,55 @@ func (Code) EnumDescriptor() ([]byte, []int) {
 	return file_game_proto_rawDescGZIP(), []int{0}
 }
 
+type RoomEvent_Kind int32
+
+const (
+	RoomEvent_KIND_UNSPECIFIED RoomEvent_Kind = 0
+	RoomEvent_JOINED           RoomEvent_Kind = 1
+	RoomEvent_LEFT             RoomEvent_Kind = 2
+)
+
+// Enum value maps for RoomEvent_Kind.
+var (
+	RoomEvent_Kind_name = map[int32]string{
+		0: "KIND_UNSPECIFIED",
+		1: "JOINED",
+		2: "LEFT",
+	}
+	RoomEvent_Kind_value = map[string]int32{
+		"KIND_UNSPECIFIED": 0,
+		"JOINED":           1,
+		"LEFT":             2,
+	}
+)
+
+func (x RoomEvent_Kind) Enum() *RoomEvent_Kind {
+	p := new(RoomEvent_Kind)
+	*p = x
+	return p
+}
+
+func (x RoomEvent_Kind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RoomEvent_Kind) Descriptor() protoreflect.EnumDescriptor {
+	return file_game_proto_enumTypes[1].Descriptor()
+}
+
+func (RoomEvent_Kind) Type() protoreflect.EnumType {
+	return &file_game_proto_enumTypes[1]
+}
+
+func (x RoomEvent_Kind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RoomEvent_Kind.Descriptor instead.
+func (RoomEvent_Kind) EnumDescriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{12, 0}
+}
+
 // Envelope 是每一帧(length-prefixed frame)的 body。
 // 所有消息都包在 Envelope 里,用 oneof 区分类型:解一次码就能 switch 分发,
 // 帧头不用再放 msg_type。取舍见 docs/DECISIONS.md D1。
@@ -98,6 +159,12 @@ type Envelope struct {
 	//	*Envelope_Kick
 	//	*Envelope_LoginReq
 	//	*Envelope_LoginResp
+	//	*Envelope_CreateRoomReq
+	//	*Envelope_JoinRoomReq
+	//	*Envelope_QuickMatchReq
+	//	*Envelope_LeaveRoomReq
+	//	*Envelope_RoomResp
+	//	*Envelope_RoomEvent
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -192,6 +259,60 @@ func (x *Envelope) GetLoginResp() *LoginResp {
 	return nil
 }
 
+func (x *Envelope) GetCreateRoomReq() *CreateRoomReq {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_CreateRoomReq); ok {
+			return x.CreateRoomReq
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetJoinRoomReq() *JoinRoomReq {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_JoinRoomReq); ok {
+			return x.JoinRoomReq
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetQuickMatchReq() *QuickMatchReq {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_QuickMatchReq); ok {
+			return x.QuickMatchReq
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetLeaveRoomReq() *LeaveRoomReq {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_LeaveRoomReq); ok {
+			return x.LeaveRoomReq
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetRoomResp() *RoomResp {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_RoomResp); ok {
+			return x.RoomResp
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetRoomEvent() *RoomEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_RoomEvent); ok {
+			return x.RoomEvent
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Payload interface {
 	isEnvelope_Payload()
 }
@@ -216,6 +337,30 @@ type Envelope_LoginResp struct {
 	LoginResp *LoginResp `protobuf:"bytes,21,opt,name=login_resp,json=loginResp,proto3,oneof"`
 }
 
+type Envelope_CreateRoomReq struct {
+	CreateRoomReq *CreateRoomReq `protobuf:"bytes,30,opt,name=create_room_req,json=createRoomReq,proto3,oneof"`
+}
+
+type Envelope_JoinRoomReq struct {
+	JoinRoomReq *JoinRoomReq `protobuf:"bytes,31,opt,name=join_room_req,json=joinRoomReq,proto3,oneof"`
+}
+
+type Envelope_QuickMatchReq struct {
+	QuickMatchReq *QuickMatchReq `protobuf:"bytes,32,opt,name=quick_match_req,json=quickMatchReq,proto3,oneof"`
+}
+
+type Envelope_LeaveRoomReq struct {
+	LeaveRoomReq *LeaveRoomReq `protobuf:"bytes,33,opt,name=leave_room_req,json=leaveRoomReq,proto3,oneof"`
+}
+
+type Envelope_RoomResp struct {
+	RoomResp *RoomResp `protobuf:"bytes,34,opt,name=room_resp,json=roomResp,proto3,oneof"`
+}
+
+type Envelope_RoomEvent struct {
+	RoomEvent *RoomEvent `protobuf:"bytes,35,opt,name=room_event,json=roomEvent,proto3,oneof"`
+}
+
 func (*Envelope_Ping) isEnvelope_Payload() {}
 
 func (*Envelope_Pong) isEnvelope_Payload() {}
@@ -225,6 +370,18 @@ func (*Envelope_Kick) isEnvelope_Payload() {}
 func (*Envelope_LoginReq) isEnvelope_Payload() {}
 
 func (*Envelope_LoginResp) isEnvelope_Payload() {}
+
+func (*Envelope_CreateRoomReq) isEnvelope_Payload() {}
+
+func (*Envelope_JoinRoomReq) isEnvelope_Payload() {}
+
+func (*Envelope_QuickMatchReq) isEnvelope_Payload() {}
+
+func (*Envelope_LeaveRoomReq) isEnvelope_Payload() {}
+
+func (*Envelope_RoomResp) isEnvelope_Payload() {}
+
+func (*Envelope_RoomEvent) isEnvelope_Payload() {}
 
 // Ping 兼作心跳:客户端定期发;服务端在 idle timeout 内收不到任何帧就踢人。
 type Ping struct {
@@ -466,12 +623,340 @@ func (x *LoginResp) GetPlayerId() uint64 {
 	return 0
 }
 
+type CreateRoomReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateRoomReq) Reset() {
+	*x = CreateRoomReq{}
+	mi := &file_game_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateRoomReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateRoomReq) ProtoMessage() {}
+
+func (x *CreateRoomReq) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateRoomReq.ProtoReflect.Descriptor instead.
+func (*CreateRoomReq) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{6}
+}
+
+type JoinRoomReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RoomId        uint32                 `protobuf:"varint,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JoinRoomReq) Reset() {
+	*x = JoinRoomReq{}
+	mi := &file_game_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JoinRoomReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JoinRoomReq) ProtoMessage() {}
+
+func (x *JoinRoomReq) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JoinRoomReq.ProtoReflect.Descriptor instead.
+func (*JoinRoomReq) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *JoinRoomReq) GetRoomId() uint32 {
+	if x != nil {
+		return x.RoomId
+	}
+	return 0
+}
+
+// QuickMatchReq:有没满的房间就进(按房间号从小到大找),没有就新建一个。
+type QuickMatchReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QuickMatchReq) Reset() {
+	*x = QuickMatchReq{}
+	mi := &file_game_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QuickMatchReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QuickMatchReq) ProtoMessage() {}
+
+func (x *QuickMatchReq) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QuickMatchReq.ProtoReflect.Descriptor instead.
+func (*QuickMatchReq) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{8}
+}
+
+type LeaveRoomReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LeaveRoomReq) Reset() {
+	*x = LeaveRoomReq{}
+	mi := &file_game_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LeaveRoomReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LeaveRoomReq) ProtoMessage() {}
+
+func (x *LeaveRoomReq) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LeaveRoomReq.ProtoReflect.Descriptor instead.
+func (*LeaveRoomReq) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{9}
+}
+
+// RoomInfo 是一个房间在某一时刻的样子。
+type RoomInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RoomId        uint32                 `protobuf:"varint,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
+	Capacity      uint32                 `protobuf:"varint,2,opt,name=capacity,proto3" json:"capacity,omitempty"`
+	Members       []uint64               `protobuf:"varint,3,rep,packed,name=members,proto3" json:"members,omitempty"` // 玩家 ID,按加入顺序
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RoomInfo) Reset() {
+	*x = RoomInfo{}
+	mi := &file_game_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RoomInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RoomInfo) ProtoMessage() {}
+
+func (x *RoomInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RoomInfo.ProtoReflect.Descriptor instead.
+func (*RoomInfo) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *RoomInfo) GetRoomId() uint32 {
+	if x != nil {
+		return x.RoomId
+	}
+	return 0
+}
+
+func (x *RoomInfo) GetCapacity() uint32 {
+	if x != nil {
+		return x.Capacity
+	}
+	return 0
+}
+
+func (x *RoomInfo) GetMembers() []uint64 {
+	if x != nil {
+		return x.Members
+	}
+	return nil
+}
+
+// RoomResp 是建房 / 加入 / 快速匹配 / 离开四种请求共用的应答。
+type RoomResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          Code                   `protobuf:"varint,1,opt,name=code,proto3,enum=game.Code" json:"code,omitempty"`
+	Room          *RoomInfo              `protobuf:"bytes,2,opt,name=room,proto3" json:"room,omitempty"` // 成功时是操作之后的房间;离开时是刚离开的那个房间
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RoomResp) Reset() {
+	*x = RoomResp{}
+	mi := &file_game_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RoomResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RoomResp) ProtoMessage() {}
+
+func (x *RoomResp) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RoomResp.ProtoReflect.Descriptor instead.
+func (*RoomResp) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *RoomResp) GetCode() Code {
+	if x != nil {
+		return x.Code
+	}
+	return Code_OK
+}
+
+func (x *RoomResp) GetRoom() *RoomInfo {
+	if x != nil {
+		return x.Room
+	}
+	return nil
+}
+
+// RoomEvent 推送给房间里的其他人。触发事件的那个人不收,他从 RoomResp 里知道结果。
+type RoomEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          RoomEvent_Kind         `protobuf:"varint,1,opt,name=kind,proto3,enum=game.RoomEvent_Kind" json:"kind,omitempty"`
+	PlayerId      uint64                 `protobuf:"varint,2,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"` // 谁进来了 / 谁走了
+	Room          *RoomInfo              `protobuf:"bytes,3,opt,name=room,proto3" json:"room,omitempty"`                          // 事件发生之后的房间
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RoomEvent) Reset() {
+	*x = RoomEvent{}
+	mi := &file_game_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RoomEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RoomEvent) ProtoMessage() {}
+
+func (x *RoomEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RoomEvent.ProtoReflect.Descriptor instead.
+func (*RoomEvent) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RoomEvent) GetKind() RoomEvent_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return RoomEvent_KIND_UNSPECIFIED
+}
+
+func (x *RoomEvent) GetPlayerId() uint64 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *RoomEvent) GetRoom() *RoomInfo {
+	if x != nil {
+		return x.Room
+	}
+	return nil
+}
+
 var File_game_proto protoreflect.FileDescriptor
 
 const file_game_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"game.proto\x12\x04game\"\xee\x01\n" +
+	"game.proto\x12\x04game\"\xc2\x04\n" +
 	"\bEnvelope\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\rR\x03seq\x12 \n" +
 	"\x04ping\x18\n" +
@@ -483,7 +968,14 @@ const file_game_proto_rawDesc = "" +
 	".game.KickH\x00R\x04kick\x12-\n" +
 	"\tlogin_req\x18\x14 \x01(\v2\x0e.game.LoginReqH\x00R\bloginReq\x120\n" +
 	"\n" +
-	"login_resp\x18\x15 \x01(\v2\x0f.game.LoginRespH\x00R\tloginRespB\t\n" +
+	"login_resp\x18\x15 \x01(\v2\x0f.game.LoginRespH\x00R\tloginResp\x12=\n" +
+	"\x0fcreate_room_req\x18\x1e \x01(\v2\x13.game.CreateRoomReqH\x00R\rcreateRoomReq\x127\n" +
+	"\rjoin_room_req\x18\x1f \x01(\v2\x11.game.JoinRoomReqH\x00R\vjoinRoomReq\x12=\n" +
+	"\x0fquick_match_req\x18  \x01(\v2\x13.game.QuickMatchReqH\x00R\rquickMatchReq\x12:\n" +
+	"\x0eleave_room_req\x18! \x01(\v2\x12.game.LeaveRoomReqH\x00R\fleaveRoomReq\x12-\n" +
+	"\troom_resp\x18\" \x01(\v2\x0e.game.RoomRespH\x00R\broomResp\x120\n" +
+	"\n" +
+	"room_event\x18# \x01(\v2\x0f.game.RoomEventH\x00R\troomEventB\t\n" +
 	"\apayload\",\n" +
 	"\x04Ping\x12$\n" +
 	"\x0eclient_time_ms\x18\x01 \x01(\x03R\fclientTimeMs\"R\n" +
@@ -497,7 +989,29 @@ const file_game_proto_rawDesc = "" +
 	"\tLoginResp\x12\x1e\n" +
 	"\x04code\x18\x01 \x01(\x0e2\n" +
 	".game.CodeR\x04code\x12\x1b\n" +
-	"\tplayer_id\x18\x02 \x01(\x04R\bplayerId*i\n" +
+	"\tplayer_id\x18\x02 \x01(\x04R\bplayerId\"\x0f\n" +
+	"\rCreateRoomReq\"&\n" +
+	"\vJoinRoomReq\x12\x17\n" +
+	"\aroom_id\x18\x01 \x01(\rR\x06roomId\"\x0f\n" +
+	"\rQuickMatchReq\"\x0e\n" +
+	"\fLeaveRoomReq\"Y\n" +
+	"\bRoomInfo\x12\x17\n" +
+	"\aroom_id\x18\x01 \x01(\rR\x06roomId\x12\x1a\n" +
+	"\bcapacity\x18\x02 \x01(\rR\bcapacity\x12\x18\n" +
+	"\amembers\x18\x03 \x03(\x04R\amembers\"N\n" +
+	"\bRoomResp\x12\x1e\n" +
+	"\x04code\x18\x01 \x01(\x0e2\n" +
+	".game.CodeR\x04code\x12\"\n" +
+	"\x04room\x18\x02 \x01(\v2\x0e.game.RoomInfoR\x04room\"\xaa\x01\n" +
+	"\tRoomEvent\x12(\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x14.game.RoomEvent.KindR\x04kind\x12\x1b\n" +
+	"\tplayer_id\x18\x02 \x01(\x04R\bplayerId\x12\"\n" +
+	"\x04room\x18\x03 \x01(\v2\x0e.game.RoomInfoR\x04room\"2\n" +
+	"\x04Kind\x12\x14\n" +
+	"\x10KIND_UNSPECIFIED\x10\x00\x12\n" +
+	"\n" +
+	"\x06JOINED\x10\x01\x12\b\n" +
+	"\x04LEFT\x10\x02*\xb2\x01\n" +
 	"\x04Code\x12\x06\n" +
 	"\x02OK\x10\x00\x12\x0f\n" +
 	"\vBAD_REQUEST\x10\x01\x12\x0f\n" +
@@ -505,7 +1019,11 @@ const file_game_proto_rawDesc = "" +
 	"\tBAD_TOKEN\x10\n" +
 	"\x12\x11\n" +
 	"\rTOKEN_EXPIRED\x10\v\x12\x15\n" +
-	"\x11ALREADY_LOGGED_IN\x10\fB7Z5github.com/Anthonyz5527083/game-server/internal/pb;pbb\x06proto3"
+	"\x11ALREADY_LOGGED_IN\x10\f\x12\x12\n" +
+	"\x0eROOM_NOT_FOUND\x10\x14\x12\r\n" +
+	"\tROOM_FULL\x10\x15\x12\x13\n" +
+	"\x0fALREADY_IN_ROOM\x10\x16\x12\x0f\n" +
+	"\vNOT_IN_ROOM\x10\x17B7Z5github.com/Anthonyz5527083/game-server/internal/pb;pbb\x06proto3"
 
 var (
 	file_game_proto_rawDescOnce sync.Once
@@ -519,29 +1037,47 @@ func file_game_proto_rawDescGZIP() []byte {
 	return file_game_proto_rawDescData
 }
 
-var file_game_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_game_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_game_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_game_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_game_proto_goTypes = []any{
-	(Code)(0),         // 0: game.Code
-	(*Envelope)(nil),  // 1: game.Envelope
-	(*Ping)(nil),      // 2: game.Ping
-	(*Pong)(nil),      // 3: game.Pong
-	(*Kick)(nil),      // 4: game.Kick
-	(*LoginReq)(nil),  // 5: game.LoginReq
-	(*LoginResp)(nil), // 6: game.LoginResp
+	(Code)(0),             // 0: game.Code
+	(RoomEvent_Kind)(0),   // 1: game.RoomEvent.Kind
+	(*Envelope)(nil),      // 2: game.Envelope
+	(*Ping)(nil),          // 3: game.Ping
+	(*Pong)(nil),          // 4: game.Pong
+	(*Kick)(nil),          // 5: game.Kick
+	(*LoginReq)(nil),      // 6: game.LoginReq
+	(*LoginResp)(nil),     // 7: game.LoginResp
+	(*CreateRoomReq)(nil), // 8: game.CreateRoomReq
+	(*JoinRoomReq)(nil),   // 9: game.JoinRoomReq
+	(*QuickMatchReq)(nil), // 10: game.QuickMatchReq
+	(*LeaveRoomReq)(nil),  // 11: game.LeaveRoomReq
+	(*RoomInfo)(nil),      // 12: game.RoomInfo
+	(*RoomResp)(nil),      // 13: game.RoomResp
+	(*RoomEvent)(nil),     // 14: game.RoomEvent
 }
 var file_game_proto_depIdxs = []int32{
-	2, // 0: game.Envelope.ping:type_name -> game.Ping
-	3, // 1: game.Envelope.pong:type_name -> game.Pong
-	4, // 2: game.Envelope.kick:type_name -> game.Kick
-	5, // 3: game.Envelope.login_req:type_name -> game.LoginReq
-	6, // 4: game.Envelope.login_resp:type_name -> game.LoginResp
-	0, // 5: game.LoginResp.code:type_name -> game.Code
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	3,  // 0: game.Envelope.ping:type_name -> game.Ping
+	4,  // 1: game.Envelope.pong:type_name -> game.Pong
+	5,  // 2: game.Envelope.kick:type_name -> game.Kick
+	6,  // 3: game.Envelope.login_req:type_name -> game.LoginReq
+	7,  // 4: game.Envelope.login_resp:type_name -> game.LoginResp
+	8,  // 5: game.Envelope.create_room_req:type_name -> game.CreateRoomReq
+	9,  // 6: game.Envelope.join_room_req:type_name -> game.JoinRoomReq
+	10, // 7: game.Envelope.quick_match_req:type_name -> game.QuickMatchReq
+	11, // 8: game.Envelope.leave_room_req:type_name -> game.LeaveRoomReq
+	13, // 9: game.Envelope.room_resp:type_name -> game.RoomResp
+	14, // 10: game.Envelope.room_event:type_name -> game.RoomEvent
+	0,  // 11: game.LoginResp.code:type_name -> game.Code
+	0,  // 12: game.RoomResp.code:type_name -> game.Code
+	12, // 13: game.RoomResp.room:type_name -> game.RoomInfo
+	1,  // 14: game.RoomEvent.kind:type_name -> game.RoomEvent.Kind
+	12, // 15: game.RoomEvent.room:type_name -> game.RoomInfo
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_game_proto_init() }
@@ -555,14 +1091,20 @@ func file_game_proto_init() {
 		(*Envelope_Kick)(nil),
 		(*Envelope_LoginReq)(nil),
 		(*Envelope_LoginResp)(nil),
+		(*Envelope_CreateRoomReq)(nil),
+		(*Envelope_JoinRoomReq)(nil),
+		(*Envelope_QuickMatchReq)(nil),
+		(*Envelope_LeaveRoomReq)(nil),
+		(*Envelope_RoomResp)(nil),
+		(*Envelope_RoomEvent)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_game_proto_rawDesc), len(file_game_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   6,
+			NumEnums:      2,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
