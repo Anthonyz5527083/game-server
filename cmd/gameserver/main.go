@@ -1,4 +1,4 @@
-// gameserver 是服务端入口:解析 flag、配置结构化日志、连 Redis、启动 TCP 网关和大厅,
+// gameserver 是服务端入口:解析 flag、配置结构化日志、连 Redis、启动 TCP 网关、大厅和房间管理,
 // 收到 SIGINT / SIGTERM 后关闭全部连接(并清理会话)再退出。
 //
 // token 密钥从环境变量 GS_TOKEN_SECRET 读,不走 flag:flag 会出现在 ps 输出和 shell 历史里。
@@ -11,14 +11,19 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Anthonyz5527083/game-server/internal/auth"
 	"github.com/Anthonyz5527083/game-server/internal/gateway"
 	"github.com/Anthonyz5527083/game-server/internal/lobby"
+	"github.com/Anthonyz5527083/game-server/internal/room"
 	"github.com/Anthonyz5527083/game-server/internal/storage"
 )
+
+// roomCapacity 是房间人数上限(scope:2–8 人)。
+const roomCapacity = 8
 
 func main() {
 	addr := flag.String("addr", ":7777", "TCP 监听地址")
@@ -57,9 +62,11 @@ func run(logger *slog.Logger, addr, redisAddr string, idle, loginTimeout, sessio
 	}
 	cancel()
 
+	rooms := room.NewManager(roomCapacity, logger)
 	lb := lobby.New(lobby.Config{
 		Signer:       signer,
 		Sessions:     storage.NewSessions(rdb, sessionTTL),
+		Rooms:        rooms,
 		Node:         node,
 		LoginTimeout: loginTimeout,
 		SessionTTL:   sessionTTL,
@@ -79,14 +86,15 @@ func run(logger *slog.Logger, addr, redisAddr string, idle, loginTimeout, sessio
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	lobbyDone := make(chan struct{})
-	go func() {
-		lb.Run(ctx)
-		close(lobbyDone)
-	}()
+	// 后台任务用单独的 ctx,等网关关完(所有 OnClose 跑完、房间都空了)才停:
+	// 房间镜像停下前最后同步一次,Redis 里就不会留下这一局的房间。
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	var bg sync.WaitGroup
+	bg.Go(func() { lb.Run(bgCtx) })                                                      // 会话续期
+	bg.Go(func() { rooms.RunMirror(bgCtx, storage.NewRoomMirror(rdb), 30*time.Second) }) // 房间镜像
 	err = srv.ListenAndServe(ctx)
-	stop() // ListenAndServe 出错返回时,也让续期 goroutine 退出
-	<-lobbyDone
+	bgCancel()
+	bg.Wait()
 	return err
 }
 
