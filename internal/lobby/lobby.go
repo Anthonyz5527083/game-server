@@ -1,6 +1,9 @@
 // Package lobby 是「大厅」:接在网关的 Handler 上,管登录状态,并把业务消息分发出去。
 //
-// 一条连接的状态只有两种:未登录 → 已登录。未登录时只接受 Ping(网关自己处理)和 LoginReq。
+// 一条连接的状态只有两种:未登录 → 已登录。未登录时只接受 Ping(网关自己处理)和 LoginReq;
+// 登录之后可以建房 / 进房 / 快速匹配 / 离开房间。
+//
+// 锁的顺序固定为 Lobby.mu → room.Manager 的锁 → 网关内部的锁,反过来的调用不存在,所以不会死锁。
 //
 // 权威数据在进程内存里(players 表:玩家 → 连接);Redis 里的会话是它的镜像,
 // 给别的进程 / 运维看「谁在线」。镜像丢了(Redis 重启)会在下一次续期时补回来。见 D7。
@@ -17,6 +20,7 @@ import (
 	"github.com/Anthonyz5527083/game-server/internal/auth"
 	"github.com/Anthonyz5527083/game-server/internal/gateway"
 	"github.com/Anthonyz5527083/game-server/internal/pb"
+	"github.com/Anthonyz5527083/game-server/internal/room"
 	"github.com/Anthonyz5527083/game-server/internal/storage"
 )
 
@@ -37,6 +41,7 @@ type SessionStore interface {
 type Config struct {
 	Signer   *auth.Signer
 	Sessions SessionStore
+	Rooms    *room.Manager
 
 	// Node 标识本进程,和连接 ID 拼成会话的 owner。多实例部署时每个进程要不同。
 	Node string
@@ -103,16 +108,42 @@ func (l *Lobby) Run(ctx context.Context) {
 }
 
 func (l *Lobby) refreshSessions(ctx context.Context) error {
+	type entry struct {
+		cl   *client
+		sess storage.Session
+	}
 	l.mu.Lock()
-	batch := make([]storage.Session, 0, len(l.players))
+	snapshot := make([]entry, 0, len(l.players))
 	for pid, cl := range l.players {
-		batch = append(batch, storage.Session{PlayerID: pid, Owner: l.owner(cl.conn), LoginAt: cl.loginAt})
+		snapshot = append(snapshot, entry{cl, storage.Session{PlayerID: pid, Owner: l.owner(cl.conn), LoginAt: cl.loginAt}})
 	}
 	l.mu.Unlock()
+
+	batch := make([]storage.Session, len(snapshot))
+	for i, e := range snapshot {
+		batch[i] = e.sess
+	}
 	// 网络 I/O 放在锁外:Redis 慢的时候,不能让所有连接的登录、进出房间都排队等它。
 	ctx, cancel := context.WithTimeout(ctx, l.cfg.StoreTimeout)
 	defer cancel()
-	return l.cfg.Sessions.PutMany(ctx, batch)
+	err := l.cfg.Sessions.PutMany(ctx, batch)
+
+	// 补偿:拍完快照到写完 Redis 之间下线的玩家,它的 OnClose 删掉的会话可能又被上面的覆盖写写回去了。
+	// 写完之后再看一眼,已经不在线的按 owner 删掉(owner 不对的删不动,不会误伤重新登录的人)。
+	l.mu.Lock()
+	var gone []storage.Session
+	for _, e := range snapshot {
+		if l.players[e.sess.PlayerID] != e.cl {
+			gone = append(gone, e.sess)
+		}
+	}
+	l.mu.Unlock()
+	for _, s := range gone {
+		if _, derr := l.cfg.Sessions.Delete(ctx, s.PlayerID, s.Owner); derr != nil {
+			l.log.Warn("refresh: delete stale session failed", "player", s.PlayerID, "err", derr)
+		}
+	}
+	return err
 }
 
 // Online 返回已登录的玩家数。
@@ -145,17 +176,67 @@ func (l *Lobby) OnMessage(c *gateway.Conn, env *pb.Envelope) {
 	if cl == nil {
 		return
 	}
-	switch p := env.GetPayload().(type) {
-	case *pb.Envelope_LoginReq:
-		l.handleLogin(cl, env.GetSeq(), p.LoginReq)
+	if req, ok := env.GetPayload().(*pb.Envelope_LoginReq); ok {
+		l.handleLogin(cl, env.GetSeq(), req.LoginReq)
+		return
+	}
+
+	// 登录之后的消息在大厅锁里处理:「确认这条连接还代表这个玩家」和「改房间」要是原子的,
+	// 否则顶号的瞬间,旧连接还能把玩家塞进一个房间,留下一个连着死连接的成员。
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch {
+	case cl.playerID == 0:
+		c.Logger().Info("message before login", "type", fmt.Sprintf("%T", env.GetPayload()))
+		c.CloseWithReason(gateway.ReasonProtocolError)
+	case l.players[cl.playerID] != cl:
+		// 已经被顶号、正在断开的旧连接:消息直接丢掉。
 	default:
-		if _, ok := l.playerOf(cl); !ok {
-			c.Logger().Info("message before login", "type", fmt.Sprintf("%T", p))
-			c.CloseWithReason(gateway.ReasonProtocolError)
-			return
-		}
+		l.handlePlayerLocked(cl, env)
+	}
+}
+
+// handlePlayerLocked 处理已登录玩家的消息。调用方持有 l.mu。
+// Lab 4 的移动输入(MoveInput)也从这里分发出去。
+func (l *Lobby) handlePlayerLocked(cl *client, env *pb.Envelope) {
+	pid, c := cl.playerID, cl.conn
+	var info room.Info
+	var err error
+	switch p := env.GetPayload().(type) {
+	case *pb.Envelope_CreateRoomReq:
+		info, err = l.cfg.Rooms.Create(pid, c)
+	case *pb.Envelope_JoinRoomReq:
+		info, err = l.cfg.Rooms.Join(p.JoinRoomReq.GetRoomId(), pid, c)
+	case *pb.Envelope_QuickMatchReq:
+		info, err = l.cfg.Rooms.QuickMatch(pid, c)
+	case *pb.Envelope_LeaveRoomReq:
+		info, err = l.cfg.Rooms.Leave(pid)
+	default:
 		c.Logger().Info("unexpected message", "type", fmt.Sprintf("%T", p))
 		c.CloseWithReason(gateway.ReasonProtocolError)
+		return
+	}
+	resp := &pb.RoomResp{Code: roomCode(err)}
+	if err == nil {
+		resp.Room = room.ToProto(info)
+	}
+	_ = c.Send(&pb.Envelope{Seq: env.GetSeq(), Payload: &pb.Envelope_RoomResp{RoomResp: resp}})
+}
+
+func roomCode(err error) pb.Code {
+	switch {
+	case err == nil:
+		return pb.Code_OK
+	case errors.Is(err, room.ErrRoomNotFound):
+		return pb.Code_ROOM_NOT_FOUND
+	case errors.Is(err, room.ErrRoomFull):
+		return pb.Code_ROOM_FULL
+	case errors.Is(err, room.ErrAlreadyInRoom):
+		return pb.Code_ALREADY_IN_ROOM
+	case errors.Is(err, room.ErrNotInRoom):
+		return pb.Code_NOT_IN_ROOM
+	default:
+		return pb.Code_BAD_REQUEST
 	}
 }
 
@@ -174,6 +255,7 @@ func (l *Lobby) OnClose(c *gateway.Conn, reason string) {
 		if cl.playerID != 0 && l.players[cl.playerID] == cl {
 			pid = cl.playerID
 			delete(l.players, pid)
+			_, _ = l.cfg.Rooms.Leave(pid) // 不在房间里会返回 ErrNotInRoom,忽略
 		}
 	}
 	l.mu.Unlock()
@@ -227,11 +309,15 @@ func (l *Lobby) handleLogin(cl *client, seq uint32, req *pb.LoginReq) {
 	old := l.players[pid]
 	l.players[pid] = cl
 	cl.playerID, cl.loginAt = pid, now
+	if old != nil {
+		// 顶号(D8):旧连接所在的房间由这里退掉。旧连接的 OnClose 看到 players[pid]
+		// 已经不是自己,什么都不会动。新连接从大厅重新开始,不继承旧房间。
+		_, _ = l.cfg.Rooms.Leave(pid)
+	}
 	l.mu.Unlock()
 	cl.loginTimer.Stop()
 
-	// 顶号(D8):新登录踢掉旧连接。旧连接的 OnClose 看到 players[pid] 已经不是自己,不会清理。
-	if old != nil && old != cl {
+	if old != nil {
 		old.conn.SendAndClose(kick(ReasonReplaced), ReasonReplaced)
 	}
 	_ = c.Send(loginResp(seq, pb.Code_OK, pid))

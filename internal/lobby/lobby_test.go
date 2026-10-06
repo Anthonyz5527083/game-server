@@ -20,6 +20,7 @@ import (
 	"github.com/Anthonyz5527083/game-server/internal/auth"
 	"github.com/Anthonyz5527083/game-server/internal/gateway"
 	"github.com/Anthonyz5527083/game-server/internal/pb"
+	"github.com/Anthonyz5527083/game-server/internal/room"
 	"github.com/Anthonyz5527083/game-server/internal/storage"
 )
 
@@ -42,7 +43,9 @@ type testEnv struct {
 	mr       *miniredis.Miniredis
 	signer   *auth.Signer
 	lobby    *Lobby
+	rooms    *room.Manager
 	sessions *storage.Sessions
+	mirror   *storage.RoomMirror
 	closes   *closeLog
 	stop     func() // 关停网关,等所有 OnClose 跑完
 }
@@ -56,9 +59,11 @@ func newEnv(t *testing.T, mutate func(*Config)) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rooms := room.NewManager(8, nil)
 	cfg := Config{
 		Signer:       signer,
 		Sessions:     storage.NewSessions(rdb, time.Minute),
+		Rooms:        rooms,
 		Node:         "test",
 		LoginTimeout: 2 * time.Second,
 		SessionTTL:   time.Minute,
@@ -78,6 +83,12 @@ func newEnv(t *testing.T, mutate func(*Config)) *testEnv {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx, ln) }()
+	mirror := storage.NewRoomMirror(rdb)
+	mirrorDone := make(chan struct{})
+	go func() {
+		rooms.RunMirror(ctx, mirror, time.Hour)
+		close(mirrorDone)
+	}()
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
@@ -85,11 +96,12 @@ func newEnv(t *testing.T, mutate func(*Config)) *testEnv {
 			if err := <-done; err != nil {
 				t.Errorf("Serve: %v", err)
 			}
+			<-mirrorDone
 		})
 	}
 	t.Cleanup(stop)
-	return &testEnv{t: t, addr: ln.Addr().String(), mr: mr, signer: signer, lobby: l,
-		sessions: cfg.Sessions.(*storage.Sessions), closes: closes, stop: stop}
+	return &testEnv{t: t, addr: ln.Addr().String(), mr: mr, signer: signer, lobby: l, rooms: rooms,
+		sessions: storage.NewSessions(rdb, time.Minute), mirror: mirror, closes: closes, stop: stop}
 }
 
 func (e *testEnv) token(pid uint64) string {
@@ -391,6 +403,43 @@ func TestRefreshRestoresLostSessions(t *testing.T) {
 	}
 }
 
+// slowPutMany 让续期卡在 PutMany 里,好在这个窗口里制造「玩家下线」。
+type slowPutMany struct {
+	SessionStore
+	entered, release chan struct{}
+}
+
+func (s *slowPutMany) PutMany(ctx context.Context, batch []storage.Session) error {
+	close(s.entered)
+	<-s.release
+	return s.SessionStore.PutMany(ctx, batch)
+}
+
+// 续期和下线的竞争:续期拍完快照之后玩家下线了,续期的覆盖写不能让它变成「幽灵在线」。
+func TestRefreshDoesNotResurrectOfflinePlayer(t *testing.T) {
+	slow := &slowPutMany{entered: make(chan struct{}), release: make(chan struct{})}
+	e := newEnv(t, func(c *Config) {
+		slow.SessionStore = c.Sessions
+		c.Sessions = slow
+	})
+	c := e.loggedIn(7)
+
+	done := make(chan error, 1)
+	go func() { done <- e.lobby.refreshSessions(context.Background()) }()
+	<-slow.entered // 快照已经拍了,里面有玩家 7
+
+	_ = c.nc.Close()
+	waitFor(t, "player 7 offline", func() bool { _, _, ok := e.session(7); return !ok && e.lobby.Online() == 0 })
+
+	close(slow.release) // 续期把 7 的会话写回去……
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := e.session(7); ok { // ……补偿删除必须把它清掉
+		t.Fatal("refresh resurrected the session of an offline player")
+	}
+}
+
 func TestLoginTwiceOnSameConn(t *testing.T) {
 	e := newEnv(t, nil)
 	c := e.dial()
@@ -415,5 +464,192 @@ func TestShutdownDeletesSessions(t *testing.T) {
 		if _, _, ok := e.session(pid); ok {
 			t.Fatalf("player %d: session still in Redis after shutdown", pid)
 		}
+	}
+}
+
+// ---------- T3.x:房间(经过真的网关和大厅) ----------
+
+func (c *testClient) roomReq(env *pb.Envelope) *pb.RoomResp {
+	c.t.Helper()
+	seq := c.send(env)
+	for {
+		got := c.recv()
+		if got.GetSeq() == seq {
+			if got.GetRoomResp() == nil {
+				c.t.Fatalf("want RoomResp, got %v", got)
+			}
+			return got.GetRoomResp()
+		}
+		// seq 0 的是推送(别人进出房间),不是这个请求的应答
+	}
+}
+
+func createRoom() *pb.Envelope {
+	return &pb.Envelope{Payload: &pb.Envelope_CreateRoomReq{CreateRoomReq: &pb.CreateRoomReq{}}}
+}
+
+func joinRoom(id uint32) *pb.Envelope {
+	return &pb.Envelope{Payload: &pb.Envelope_JoinRoomReq{JoinRoomReq: &pb.JoinRoomReq{RoomId: id}}}
+}
+
+func quickMatch() *pb.Envelope {
+	return &pb.Envelope{Payload: &pb.Envelope_QuickMatchReq{QuickMatchReq: &pb.QuickMatchReq{}}}
+}
+
+func leaveRoom() *pb.Envelope {
+	return &pb.Envelope{Payload: &pb.Envelope_LeaveRoomReq{LeaveRoomReq: &pb.LeaveRoomReq{}}}
+}
+
+// recvEvent 读下一个 RoomEvent。
+func (c *testClient) recvEvent() *pb.RoomEvent {
+	c.t.Helper()
+	env := c.recv()
+	if env.GetRoomEvent() == nil {
+		c.t.Fatalf("want RoomEvent, got %v", env)
+	}
+	return env.GetRoomEvent()
+}
+
+func (e *testEnv) loggedIn(pid uint64) *testClient {
+	e.t.Helper()
+	c := e.dial()
+	if code := c.login(e.token(pid)).GetCode(); code != pb.Code_OK {
+		e.t.Fatalf("player %d: login code = %v", pid, code)
+	}
+	return c
+}
+
+// waitMirror 等 Redis 里的房间镜像变成 want(房间号 → 成员,成员无序)。
+func (e *testEnv) waitMirror(want map[uint32][]uint64) {
+	e.t.Helper()
+	ctx := context.Background()
+	waitFor(e.t, "redis room mirror", func() bool {
+		ids, err := e.mirror.RoomIDs(ctx)
+		if err != nil || len(ids) != len(want) {
+			return false
+		}
+		for _, id := range ids {
+			got, err := e.mirror.RoomMembers(ctx, id)
+			if err != nil || !sameSet(got, want[id]) {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func sameSet(a, b []uint64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[uint64]bool, len(a))
+	for _, x := range a {
+		seen[x] = true
+	}
+	for _, x := range b {
+		if !seen[x] {
+			return false
+		}
+	}
+	return true
+}
+
+// T3.1 A 建房,B 加入:B 的应答里有 [A B],A 收到「B joined」;Redis 镜像跟上。
+func TestRoomCreateAndJoin(t *testing.T) {
+	e := newEnv(t, nil)
+	a, b := e.loggedIn(1), e.loggedIn(2)
+
+	created := a.roomReq(createRoom())
+	if created.GetCode() != pb.Code_OK {
+		t.Fatalf("create: %v", created)
+	}
+	id := created.GetRoom().GetRoomId()
+
+	joined := b.roomReq(joinRoom(id))
+	if joined.GetCode() != pb.Code_OK || !sameSet(joined.GetRoom().GetMembers(), []uint64{1, 2}) {
+		t.Fatalf("join: %v", joined)
+	}
+	ev := a.recvEvent()
+	if ev.GetKind() != pb.RoomEvent_JOINED || ev.GetPlayerId() != 2 {
+		t.Fatalf("a got %v, want JOINED(2)", ev)
+	}
+	e.waitMirror(map[uint32][]uint64{id: {1, 2}})
+}
+
+// T3.2 / T3.3 的错误码能传回客户端。
+func TestRoomErrorCodes(t *testing.T) {
+	e := newEnv(t, nil)
+	a := e.loggedIn(1)
+	if code := a.roomReq(joinRoom(999)).GetCode(); code != pb.Code_ROOM_NOT_FOUND {
+		t.Fatalf("join missing room: %v", code)
+	}
+	if code := a.roomReq(leaveRoom()).GetCode(); code != pb.Code_NOT_IN_ROOM {
+		t.Fatalf("leave without room: %v", code)
+	}
+	id := a.roomReq(createRoom()).GetRoom().GetRoomId()
+	if code := a.roomReq(quickMatch()).GetCode(); code != pb.Code_ALREADY_IN_ROOM {
+		t.Fatalf("quick match while in room: %v", code)
+	}
+	for pid := uint64(2); pid <= 8; pid++ {
+		if code := e.loggedIn(pid).roomReq(joinRoom(id)).GetCode(); code != pb.Code_OK {
+			t.Fatalf("player %d join: %v", pid, code)
+		}
+	}
+	if code := e.loggedIn(9).roomReq(joinRoom(id)).GetCode(); code != pb.Code_ROOM_FULL {
+		t.Fatalf("9th player: %v, want ROOM_FULL", code)
+	}
+}
+
+// 没登录不能碰房间。
+func TestRoomRequiresLogin(t *testing.T) {
+	e := newEnv(t, nil)
+	c := e.dial()
+	c.send(quickMatch())
+	c.expectEOF()
+	e.closes.waitFor(t, gateway.ReasonProtocolError)
+}
+
+// T3.4 B 断线:A 在 1 秒内收到「B left」;最后一个人离开,房间销毁,Redis 里的 key 也没了。
+func TestDisconnectLeavesRoom(t *testing.T) {
+	e := newEnv(t, nil)
+	a, b := e.loggedIn(1), e.loggedIn(2)
+	id := a.roomReq(quickMatch()).GetRoom().GetRoomId()
+	b.roomReq(quickMatch())
+	a.recvEvent() // JOINED(2)
+
+	_ = b.nc.Close()
+	_ = a.nc.SetReadDeadline(time.Now().Add(time.Second))
+	ev := a.recvEvent()
+	if ev.GetKind() != pb.RoomEvent_LEFT || ev.GetPlayerId() != 2 {
+		t.Fatalf("a got %v, want LEFT(2)", ev)
+	}
+	e.waitMirror(map[uint32][]uint64{id: {1}})
+
+	if resp := a.roomReq(leaveRoom()); resp.GetCode() != pb.Code_OK {
+		t.Fatalf("leave: %v", resp)
+	}
+	e.waitMirror(map[uint32][]uint64{})
+	if len(e.rooms.Rooms()) != 0 {
+		t.Fatalf("rooms = %v, want none", e.rooms.Rooms())
+	}
+}
+
+// 顶号时旧连接退出房间,房间里的人收到 LEFT;新连接不在任何房间里。
+func TestReplacedPlayerLeavesRoom(t *testing.T) {
+	e := newEnv(t, nil)
+	old, other := e.loggedIn(7), e.loggedIn(8)
+	old.roomReq(quickMatch())
+	other.roomReq(quickMatch())
+
+	fresh := e.loggedIn(7)
+	ev := other.recvEvent()
+	if ev.GetKind() != pb.RoomEvent_LEFT || ev.GetPlayerId() != 7 {
+		t.Fatalf("other got %v, want LEFT(7)", ev)
+	}
+	if _, in := e.rooms.RoomOf(7); in {
+		t.Fatal("player 7 still in a room after re-login")
+	}
+	if code := fresh.roomReq(quickMatch()).GetCode(); code != pb.Code_OK {
+		t.Fatalf("fresh quick match: %v", code)
 	}
 }

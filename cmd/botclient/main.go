@@ -1,5 +1,6 @@
 // botclient 是冒烟 / 压测客户端。
-// 现在的版本:单连接,(可选)先登录,然后按间隔发 N 个 Ping,逐个等 Pong,统计 RTT 分位数。
+// 现在的版本:单连接,(可选)先登录、快速匹配进房间,然后按间隔发 N 个 Ping,逐个等 Pong,统计 RTT 分位数。
+// 等 Pong 的时候收到的推送(别人进出房间、被踢)会打印出来,开两个 bot 就能看到彼此。
 // Lab 5 在此基础上加并发连接数和同步流量,产出 500 并发下的 P99。
 //
 // 登录用的 token:给了 -token 就用它;否则用 GS_TOKEN_SECRET 给 -player 现签一个。
@@ -29,6 +30,7 @@ type options struct {
 	interval time.Duration
 	timeout  time.Duration
 	quiet    bool
+	match    bool
 }
 
 func main() {
@@ -40,6 +42,7 @@ func main() {
 	flag.DurationVar(&o.interval, "interval", 100*time.Millisecond, "两次 Ping 之间的间隔")
 	flag.DurationVar(&o.timeout, "timeout", 3*time.Second, "连接超时,以及每次等应答的超时")
 	flag.BoolVar(&o.quiet, "q", false, "不逐条打印 Pong,只打印最后的统计")
+	flag.BoolVar(&o.match, "match", false, "登录后快速匹配进一个房间(需要 -player 或 -token)")
 	flag.Parse()
 
 	if err := run(o); err != nil {
@@ -89,6 +92,11 @@ func run(o options) error {
 		if err := login(c, o); err != nil {
 			return err
 		}
+		if o.match {
+			if err := quickMatch(c); err != nil {
+				return err
+			}
+		}
 	}
 	return pingLoop(c, o)
 }
@@ -117,6 +125,23 @@ func login(c *client, o options) error {
 		return fmt.Errorf("login failed: %v", resp.GetCode())
 	}
 	fmt.Printf("logged in as player %d\n", resp.GetPlayerId())
+	return nil
+}
+
+func quickMatch(c *client) error {
+	seq, err := c.send(&pb.Envelope{Payload: &pb.Envelope_QuickMatchReq{QuickMatchReq: &pb.QuickMatchReq{}}})
+	if err != nil {
+		return fmt.Errorf("send quick match: %w", err)
+	}
+	env, err := c.await(seq)
+	if err != nil {
+		return fmt.Errorf("wait quick match: %w", err)
+	}
+	resp := env.GetRoomResp()
+	if resp.GetCode() != pb.Code_OK {
+		return fmt.Errorf("quick match failed: %v", resp.GetCode())
+	}
+	fmt.Printf("in room %d, members %v\n", resp.GetRoom().GetRoomId(), resp.GetRoom().GetMembers())
 	return nil
 }
 
