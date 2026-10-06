@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package game;
+
+option go_package = "github.com/Anthonyz5527083/game-server/internal/pb;pb";
+
+// Envelope 是每一帧(length-prefixed frame)的 body。
+// 所有消息都包在 Envelope 里,用 oneof 区分类型:解一次码就能 switch 分发,
+// 帧头不用再放 msg_type。取舍见 docs/DECISIONS.md D1。
+message Envelope {
+  // 请求方自增的序号。应答原样带回,发送方靠它把请求和应答配对。
+  // 服务端主动推送的消息(广播、踢人)seq 为 0。
+  uint32 seq = 1;
+
+  // 字段号按模块分段,新消息往对应区间里加:
+  //   10–19 网关(心跳)   20–29 登录   30–39 房间   40–49 同步(Lab 4)
+  oneof payload {
+    Ping ping = 10;
+    Pong pong = 11;
+  }
+}
+
+// Ping 兼作心跳:客户端定期发;服务端在 idle timeout 内收不到任何帧就踢人。
+message Ping {
+  // 客户端发送时刻(unix ms)。Pong 原样带回,客户端不用保存状态就能算 RTT。
+  int64 client_time_ms = 1;
+}
+
+message Pong {
+  int64 client_time_ms = 1; // 从 Ping 原样复制
+  int64 server_time_ms = 2; // 服务端处理时刻(unix ms),以后可以用来估算时钟偏差
+}
