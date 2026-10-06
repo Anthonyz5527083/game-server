@@ -68,8 +68,9 @@ func TestReadFrameErrors(t *testing.T) {
 
 // 恶意长度头不应该触发大块分配:ReadFrame 必须在 make 之前拒绝。
 // 看的是分配的总字节数,不是次数(错误包装本身就有几次小分配)。
+// 长度头用 64 MiB 而不是 0xFFFFFFFF:检查一旦被改坏,这个测试要能安全地红,而不是分配 100 次 4 GiB 把机器拖死。
 func TestReadFrameRejectsBeforeAllocating(t *testing.T) {
-	input := []byte{0xFF, 0xFF, 0xFF, 0xFF}
+	input := be32(64 << 20)
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	for range 100 {
