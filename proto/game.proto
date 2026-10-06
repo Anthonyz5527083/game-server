@@ -17,7 +17,22 @@ message Envelope {
   oneof payload {
     Ping ping = 10;
     Pong pong = 11;
+    Kick kick = 12;
+
+    LoginReq login_req = 20;
+    LoginResp login_resp = 21;
   }
+}
+
+// Code 是所有应答共用的结果码,0 表示成功。
+enum Code {
+  OK = 0;
+  BAD_REQUEST = 1;        // 当前状态下不该发这条消息
+  UNAVAILABLE = 2;        // 服务端依赖(Redis)暂时不可用,可以重试
+
+  BAD_TOKEN = 10;         // token 格式不对或签名不对
+  TOKEN_EXPIRED = 11;
+  ALREADY_LOGGED_IN = 12; // 这条连接已经登录过了
 }
 
 // Ping 兼作心跳:客户端定期发;服务端在 idle timeout 内收不到任何帧就踢人。
@@ -29,4 +44,19 @@ message Ping {
 message Pong {
   int64 client_time_ms = 1; // 从 Ping 原样复制
   int64 server_time_ms = 2; // 服务端处理时刻(unix ms),以后可以用来估算时钟偏差
+}
+
+// Kick 是服务端断开连接前发的最后一帧,告诉客户端为什么被断。
+message Kick {
+  string reason = 1; // 比如 "login timeout"、"replaced"(同一账号在别处登录)
+}
+
+// LoginReq 必须是连接上的第一条业务消息。登录前只允许发 Ping 和 LoginReq。
+message LoginReq {
+  string token = 1;
+}
+
+message LoginResp {
+  Code code = 1;
+  uint64 player_id = 2; // 成功时是 token 里的玩家 ID
 }

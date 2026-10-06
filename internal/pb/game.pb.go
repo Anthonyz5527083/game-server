@@ -21,6 +21,65 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// Code 是所有应答共用的结果码,0 表示成功。
+type Code int32
+
+const (
+	Code_OK                Code = 0
+	Code_BAD_REQUEST       Code = 1  // 当前状态下不该发这条消息
+	Code_UNAVAILABLE       Code = 2  // 服务端依赖(Redis)暂时不可用,可以重试
+	Code_BAD_TOKEN         Code = 10 // token 格式不对或签名不对
+	Code_TOKEN_EXPIRED     Code = 11
+	Code_ALREADY_LOGGED_IN Code = 12 // 这条连接已经登录过了
+)
+
+// Enum value maps for Code.
+var (
+	Code_name = map[int32]string{
+		0:  "OK",
+		1:  "BAD_REQUEST",
+		2:  "UNAVAILABLE",
+		10: "BAD_TOKEN",
+		11: "TOKEN_EXPIRED",
+		12: "ALREADY_LOGGED_IN",
+	}
+	Code_value = map[string]int32{
+		"OK":                0,
+		"BAD_REQUEST":       1,
+		"UNAVAILABLE":       2,
+		"BAD_TOKEN":         10,
+		"TOKEN_EXPIRED":     11,
+		"ALREADY_LOGGED_IN": 12,
+	}
+)
+
+func (x Code) Enum() *Code {
+	p := new(Code)
+	*p = x
+	return p
+}
+
+func (x Code) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Code) Descriptor() protoreflect.EnumDescriptor {
+	return file_game_proto_enumTypes[0].Descriptor()
+}
+
+func (Code) Type() protoreflect.EnumType {
+	return &file_game_proto_enumTypes[0]
+}
+
+func (x Code) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Code.Descriptor instead.
+func (Code) EnumDescriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{0}
+}
+
 // Envelope 是每一帧(length-prefixed frame)的 body。
 // 所有消息都包在 Envelope 里,用 oneof 区分类型:解一次码就能 switch 分发,
 // 帧头不用再放 msg_type。取舍见 docs/DECISIONS.md D1。
@@ -36,6 +95,9 @@ type Envelope struct {
 	//
 	//	*Envelope_Ping
 	//	*Envelope_Pong
+	//	*Envelope_Kick
+	//	*Envelope_LoginReq
+	//	*Envelope_LoginResp
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -103,6 +165,33 @@ func (x *Envelope) GetPong() *Pong {
 	return nil
 }
 
+func (x *Envelope) GetKick() *Kick {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_Kick); ok {
+			return x.Kick
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetLoginReq() *LoginReq {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_LoginReq); ok {
+			return x.LoginReq
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetLoginResp() *LoginResp {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_LoginResp); ok {
+			return x.LoginResp
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Payload interface {
 	isEnvelope_Payload()
 }
@@ -115,9 +204,27 @@ type Envelope_Pong struct {
 	Pong *Pong `protobuf:"bytes,11,opt,name=pong,proto3,oneof"`
 }
 
+type Envelope_Kick struct {
+	Kick *Kick `protobuf:"bytes,12,opt,name=kick,proto3,oneof"`
+}
+
+type Envelope_LoginReq struct {
+	LoginReq *LoginReq `protobuf:"bytes,20,opt,name=login_req,json=loginReq,proto3,oneof"`
+}
+
+type Envelope_LoginResp struct {
+	LoginResp *LoginResp `protobuf:"bytes,21,opt,name=login_resp,json=loginResp,proto3,oneof"`
+}
+
 func (*Envelope_Ping) isEnvelope_Payload() {}
 
 func (*Envelope_Pong) isEnvelope_Payload() {}
+
+func (*Envelope_Kick) isEnvelope_Payload() {}
+
+func (*Envelope_LoginReq) isEnvelope_Payload() {}
+
+func (*Envelope_LoginResp) isEnvelope_Payload() {}
 
 // Ping 兼作心跳:客户端定期发;服务端在 idle timeout 内收不到任何帧就踢人。
 type Ping struct {
@@ -217,25 +324,188 @@ func (x *Pong) GetServerTimeMs() int64 {
 	return 0
 }
 
+// Kick 是服务端断开连接前发的最后一帧,告诉客户端为什么被断。
+type Kick struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Reason        string                 `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"` // 比如 "login timeout"、"replaced"(同一账号在别处登录)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Kick) Reset() {
+	*x = Kick{}
+	mi := &file_game_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Kick) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Kick) ProtoMessage() {}
+
+func (x *Kick) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Kick.ProtoReflect.Descriptor instead.
+func (*Kick) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *Kick) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// LoginReq 必须是连接上的第一条业务消息。登录前只允许发 Ping 和 LoginReq。
+type LoginReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LoginReq) Reset() {
+	*x = LoginReq{}
+	mi := &file_game_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LoginReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LoginReq) ProtoMessage() {}
+
+func (x *LoginReq) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LoginReq.ProtoReflect.Descriptor instead.
+func (*LoginReq) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *LoginReq) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+type LoginResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          Code                   `protobuf:"varint,1,opt,name=code,proto3,enum=game.Code" json:"code,omitempty"`
+	PlayerId      uint64                 `protobuf:"varint,2,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"` // 成功时是 token 里的玩家 ID
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LoginResp) Reset() {
+	*x = LoginResp{}
+	mi := &file_game_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LoginResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LoginResp) ProtoMessage() {}
+
+func (x *LoginResp) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LoginResp.ProtoReflect.Descriptor instead.
+func (*LoginResp) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *LoginResp) GetCode() Code {
+	if x != nil {
+		return x.Code
+	}
+	return Code_OK
+}
+
+func (x *LoginResp) GetPlayerId() uint64 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
 var File_game_proto protoreflect.FileDescriptor
 
 const file_game_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"game.proto\x12\x04game\"k\n" +
+	"game.proto\x12\x04game\"\xee\x01\n" +
 	"\bEnvelope\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\rR\x03seq\x12 \n" +
 	"\x04ping\x18\n" +
 	" \x01(\v2\n" +
 	".game.PingH\x00R\x04ping\x12 \n" +
 	"\x04pong\x18\v \x01(\v2\n" +
-	".game.PongH\x00R\x04pongB\t\n" +
+	".game.PongH\x00R\x04pong\x12 \n" +
+	"\x04kick\x18\f \x01(\v2\n" +
+	".game.KickH\x00R\x04kick\x12-\n" +
+	"\tlogin_req\x18\x14 \x01(\v2\x0e.game.LoginReqH\x00R\bloginReq\x120\n" +
+	"\n" +
+	"login_resp\x18\x15 \x01(\v2\x0f.game.LoginRespH\x00R\tloginRespB\t\n" +
 	"\apayload\",\n" +
 	"\x04Ping\x12$\n" +
 	"\x0eclient_time_ms\x18\x01 \x01(\x03R\fclientTimeMs\"R\n" +
 	"\x04Pong\x12$\n" +
 	"\x0eclient_time_ms\x18\x01 \x01(\x03R\fclientTimeMs\x12$\n" +
-	"\x0eserver_time_ms\x18\x02 \x01(\x03R\fserverTimeMsB7Z5github.com/Anthonyz5527083/game-server/internal/pb;pbb\x06proto3"
+	"\x0eserver_time_ms\x18\x02 \x01(\x03R\fserverTimeMs\"\x1e\n" +
+	"\x04Kick\x12\x16\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason\" \n" +
+	"\bLoginReq\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\"H\n" +
+	"\tLoginResp\x12\x1e\n" +
+	"\x04code\x18\x01 \x01(\x0e2\n" +
+	".game.CodeR\x04code\x12\x1b\n" +
+	"\tplayer_id\x18\x02 \x01(\x04R\bplayerId*i\n" +
+	"\x04Code\x12\x06\n" +
+	"\x02OK\x10\x00\x12\x0f\n" +
+	"\vBAD_REQUEST\x10\x01\x12\x0f\n" +
+	"\vUNAVAILABLE\x10\x02\x12\r\n" +
+	"\tBAD_TOKEN\x10\n" +
+	"\x12\x11\n" +
+	"\rTOKEN_EXPIRED\x10\v\x12\x15\n" +
+	"\x11ALREADY_LOGGED_IN\x10\fB7Z5github.com/Anthonyz5527083/game-server/internal/pb;pbb\x06proto3"
 
 var (
 	file_game_proto_rawDescOnce sync.Once
@@ -249,20 +519,29 @@ func file_game_proto_rawDescGZIP() []byte {
 	return file_game_proto_rawDescData
 }
 
-var file_game_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_game_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_game_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_game_proto_goTypes = []any{
-	(*Envelope)(nil), // 0: game.Envelope
-	(*Ping)(nil),     // 1: game.Ping
-	(*Pong)(nil),     // 2: game.Pong
+	(Code)(0),         // 0: game.Code
+	(*Envelope)(nil),  // 1: game.Envelope
+	(*Ping)(nil),      // 2: game.Ping
+	(*Pong)(nil),      // 3: game.Pong
+	(*Kick)(nil),      // 4: game.Kick
+	(*LoginReq)(nil),  // 5: game.LoginReq
+	(*LoginResp)(nil), // 6: game.LoginResp
 }
 var file_game_proto_depIdxs = []int32{
-	1, // 0: game.Envelope.ping:type_name -> game.Ping
-	2, // 1: game.Envelope.pong:type_name -> game.Pong
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	2, // 0: game.Envelope.ping:type_name -> game.Ping
+	3, // 1: game.Envelope.pong:type_name -> game.Pong
+	4, // 2: game.Envelope.kick:type_name -> game.Kick
+	5, // 3: game.Envelope.login_req:type_name -> game.LoginReq
+	6, // 4: game.Envelope.login_resp:type_name -> game.LoginResp
+	0, // 5: game.LoginResp.code:type_name -> game.Code
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_game_proto_init() }
@@ -273,19 +552,23 @@ func file_game_proto_init() {
 	file_game_proto_msgTypes[0].OneofWrappers = []any{
 		(*Envelope_Ping)(nil),
 		(*Envelope_Pong)(nil),
+		(*Envelope_Kick)(nil),
+		(*Envelope_LoginReq)(nil),
+		(*Envelope_LoginResp)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_game_proto_rawDesc), len(file_game_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   3,
+			NumEnums:      1,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_game_proto_goTypes,
 		DependencyIndexes: file_game_proto_depIdxs,
+		EnumInfos:         file_game_proto_enumTypes,
 		MessageInfos:      file_game_proto_msgTypes,
 	}.Build()
 	File_game_proto = out.File
