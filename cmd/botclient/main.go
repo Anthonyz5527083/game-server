@@ -6,6 +6,9 @@
 // -watch:登录、匹配之后不测 RTT,持续打印房间快照;加 -move 自己绕圈走。
 // 开两个终端,一个 -watch -move、一个 -watch,能看到对方的坐标在变。
 //
+// -c N:压测模式(load.go)。N 条连接全部登录、快速匹配之后,每条按 20Hz 发移动输入、5Hz 发 Ping,
+// 预热 -warmup 之后测量 -d,输出 Ping RTT、快照间隔、快照到达率。
+//
 // 登录用的 token:给了 -token 就用它;否则用 GS_TOKEN_SECRET 给 -player 现签一个。
 // bot 是测试工具,手里有密钥可以自签,省得压测前先跑 500 次 tokengen。
 package main
@@ -40,6 +43,12 @@ type options struct {
 	match    bool
 	watch    bool
 	move     bool
+
+	conns  int
+	dur    time.Duration
+	warmup time.Duration
+	moveHz int
+	pingHz int
 }
 
 func main() {
@@ -54,20 +63,30 @@ func main() {
 	flag.BoolVar(&o.match, "match", false, "登录后快速匹配进一个房间(需要 -player 或 -token)")
 	flag.BoolVar(&o.watch, "watch", false, "登录并快速匹配后持续打印快照,直到 Ctrl-C(需要 -player 或 -token)")
 	flag.BoolVar(&o.move, "move", false, "和 -watch 一起用:自己绕圈走")
+	flag.IntVar(&o.conns, "c", 0, "压测模式:并发连接数。玩家 ID 从 -player 开始连续分配(-player 为 0 时从 1 开始)")
+	flag.DurationVar(&o.dur, "d", 30*time.Second, "压测模式:测量时长")
+	flag.DurationVar(&o.warmup, "warmup", 5*time.Second, "压测模式:测量前的预热时长,这段时间的样本不计")
+	flag.IntVar(&o.moveHz, "move-hz", 20, "压测模式:每条连接每秒发几个 MoveInput")
+	flag.IntVar(&o.pingHz, "ping-hz", 5, "压测模式:每条连接每秒发几个 Ping")
 	flag.Parse()
 
+	run := run
+	if o.conns > 0 {
+		run = load
+	}
 	if err := run(o); err != nil {
 		fmt.Fprintln(os.Stderr, "botclient:", err)
 		os.Exit(1)
 	}
 }
 
-// client 包一条连接:发请求时自动编 seq,等应答时把中途收到的推送消息打印出来。
+// client 包一条连接:发请求时自动编 seq,等应答时把中途收到的推送消息打印出来(quiet 时不打印)。
 type client struct {
 	nc      net.Conn
 	r       *bufio.Reader
 	seq     uint32
 	timeout time.Duration
+	quiet   bool
 }
 
 func (c *client) send(env *pb.Envelope) (uint32, error) {
@@ -87,7 +106,9 @@ func (c *client) await(seq uint32) (*pb.Envelope, error) {
 		if env.GetSeq() == seq {
 			return env, nil
 		}
-		fmt.Printf("push: %v\n", env)
+		if !c.quiet && env.GetSnapshot() == nil {
+			fmt.Printf("push: %v\n", env)
+		}
 	}
 }
 
@@ -100,13 +121,21 @@ func run(o options) error {
 	c := &client{nc: nc, r: bufio.NewReader(nc), timeout: o.timeout}
 
 	if o.player != 0 || o.token != "" {
-		if err := login(c, o); err != nil {
+		tok, err := token(o)
+		if err != nil {
 			return err
 		}
+		pid, err := login(c, tok)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("logged in as player %d\n", pid)
 		if o.match || o.watch {
-			if err := quickMatch(c); err != nil {
+			info, err := quickMatch(c)
+			if err != nil {
 				return err
 			}
+			fmt.Printf("in room %d, members %v\n", info.GetRoomId(), info.GetMembers())
 		}
 	} else if o.watch {
 		return fmt.Errorf("-watch needs -player or -token")
@@ -117,48 +146,56 @@ func run(o options) error {
 	return pingLoop(c, o)
 }
 
-func login(c *client, o options) error {
-	tok := o.token
-	if tok == "" {
-		signer, err := auth.NewSigner([]byte(os.Getenv("GS_TOKEN_SECRET")))
-		if err != nil {
-			return fmt.Errorf("sign token: GS_TOKEN_SECRET: %w", err)
-		}
-		if tok, err = signer.Issue(o.player, time.Now().Add(time.Hour)); err != nil {
-			return err
-		}
+// token 返回 -token;没给就用 GS_TOKEN_SECRET 给 -player 现签一个。
+func token(o options) (string, error) {
+	if o.token != "" {
+		return o.token, nil
 	}
+	signer, err := newSigner()
+	if err != nil {
+		return "", err
+	}
+	return signer.Issue(o.player, time.Now().Add(time.Hour))
+}
+
+func newSigner() (*auth.Signer, error) {
+	signer, err := auth.NewSigner([]byte(os.Getenv("GS_TOKEN_SECRET")))
+	if err != nil {
+		return nil, fmt.Errorf("sign token: GS_TOKEN_SECRET: %w", err)
+	}
+	return signer, nil
+}
+
+func login(c *client, tok string) (uint64, error) {
 	seq, err := c.send(&pb.Envelope{Payload: &pb.Envelope_LoginReq{LoginReq: &pb.LoginReq{Token: tok}}})
 	if err != nil {
-		return fmt.Errorf("send login: %w", err)
+		return 0, fmt.Errorf("send login: %w", err)
 	}
 	env, err := c.await(seq)
 	if err != nil {
-		return fmt.Errorf("wait login: %w", err)
+		return 0, fmt.Errorf("wait login: %w", err)
 	}
 	resp := env.GetLoginResp()
 	if resp.GetCode() != pb.Code_OK {
-		return fmt.Errorf("login failed: %v", resp.GetCode())
+		return 0, fmt.Errorf("login failed: %v", resp.GetCode())
 	}
-	fmt.Printf("logged in as player %d\n", resp.GetPlayerId())
-	return nil
+	return resp.GetPlayerId(), nil
 }
 
-func quickMatch(c *client) error {
+func quickMatch(c *client) (*pb.RoomInfo, error) {
 	seq, err := c.send(&pb.Envelope{Payload: &pb.Envelope_QuickMatchReq{QuickMatchReq: &pb.QuickMatchReq{}}})
 	if err != nil {
-		return fmt.Errorf("send quick match: %w", err)
+		return nil, fmt.Errorf("send quick match: %w", err)
 	}
 	env, err := c.await(seq)
 	if err != nil {
-		return fmt.Errorf("wait quick match: %w", err)
+		return nil, fmt.Errorf("wait quick match: %w", err)
 	}
 	resp := env.GetRoomResp()
 	if resp.GetCode() != pb.Code_OK {
-		return fmt.Errorf("quick match failed: %v", resp.GetCode())
+		return nil, fmt.Errorf("quick match failed: %v", resp.GetCode())
 	}
-	fmt.Printf("in room %d, members %v\n", resp.GetRoom().GetRoomId(), resp.GetRoom().GetMembers())
-	return nil
+	return resp.GetRoom(), nil
 }
 
 // watch 持续打印快照,直到 Ctrl-C 或连接断开。读在当前 goroutine,写在另一个 goroutine:
@@ -268,6 +305,17 @@ func printSummary(rtts []time.Duration) {
 	slices.Sort(rtts)
 	fmt.Printf("pings=%d min=%v p50=%v p99=%v max=%v\n",
 		len(rtts), rtts[0], percentile(rtts, 0.50), percentile(rtts, 0.99), rtts[len(rtts)-1])
+}
+
+// dist 把一组样本排好序,格式化成 n / p50 / p99 / max。
+func dist(name string, xs []time.Duration) string {
+	if len(xs) == 0 {
+		return name + ": no samples"
+	}
+	slices.Sort(xs)
+	r := func(d time.Duration) time.Duration { return d.Round(time.Microsecond) }
+	return fmt.Sprintf("%s: n=%d p50=%v p99=%v max=%v", name, len(xs),
+		r(percentile(xs, 0.50)), r(percentile(xs, 0.99)), r(xs[len(xs)-1]))
 }
 
 // percentile 用「最近秩」取分位数:sorted[ceil(p*n)-1]。样本少时 p99 就是最大值,不做插值。
