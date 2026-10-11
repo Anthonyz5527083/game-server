@@ -1,0 +1,8 @@
+# docker compose --profile monitoring 用的 Prometheus 配置:每 5 秒抓一次 gameserver 的 /metrics。
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: gameserver
+    static_configs:
+      - targets: ["gameserver:9100"]

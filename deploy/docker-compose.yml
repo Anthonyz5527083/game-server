@@ -1,9 +1,44 @@
-# 本地开发用的依赖。Lab 6 再把 gameserver 自己和 MySQL 加进来。
-#   make redis   # 等价于 docker compose -f deploy/docker-compose.yml up -d redis
+# 一键起全套:gameserver + Redis + MySQL。在仓库根目录:
+#   make up        # 等价于 docker compose -f deploy/docker-compose.yml up -d --build
+#   make down      # 停掉;make down-v 连 MySQL 数据卷一起删
+# 可选的 Prometheus:docker compose -f deploy/docker-compose.yml --profile monitoring up -d
+#
+# 所有端口都只绑 127.0.0.1:开发用的 Redis 没有密码、MySQL 是开发密码、admin 端口上有 pprof,
+# 都不能暴露给局域网。容器之间走 compose 的默认 bridge 网络,用服务名互相访问(D27)。
+name: game-server
+
 services:
+  gameserver:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: game-server:dev
+    command:
+      - -addr=:7777
+      - -redis=redis:6379
+      - -admin=:9100 # 容器里要绑 0.0.0.0 才能被映射出去;映射到宿主机时只绑 127.0.0.1(见 ports)
+      - -node=gameserver-1
+      - -log-json
+    environment:
+      # 下面两个默认值都是开发用的,和 Makefile 里的一样,不是秘密。部署时从外面覆盖,例如:
+      #   GS_TOKEN_SECRET=$(openssl rand -hex 32) MYSQL_PASSWORD=... make up
+      GS_TOKEN_SECRET: ${GS_TOKEN_SECRET:-local-dev-only-not-a-secret}
+      GS_MYSQL_DSN: game:${MYSQL_PASSWORD:-local-dev-only}@tcp(mysql:3306)/game
+    ports:
+      - "127.0.0.1:7777:7777"
+      - "127.0.0.1:9100:9100"
+    # 等 Redis 和 MySQL 的 healthcheck 通过再启动(D26)。这只管第一次启动的顺序;
+    # 运行中依赖重启时,gameserver 自己扛:登录回 UNAVAILABLE,依赖恢复后自动好,不会退出。
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 10s # docker stop 先发 SIGTERM,10 秒内没退出才 SIGKILL(退出码 137)
+
   redis:
     image: redis:7.4-alpine
-    # 只绑 127.0.0.1:开发机上的 Redis 没有密码,不能暴露给局域网。
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
@@ -11,3 +46,38 @@ services:
       interval: 5s
       timeout: 2s
       retries: 10
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: game
+      MYSQL_USER: game
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-local-dev-only}
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes" # root 密码随机生成、只打印在 MySQL 容器的日志里;应用只用 game 账号
+    volumes:
+      # 数据卷为空(第一次 up,或者 down -v 之后)时,官方镜像按文件名顺序执行这个目录里的 .sql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - mysql-data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3306:3306"
+    healthcheck:
+      # 走 TCP(-h 127.0.0.1):初始化阶段镜像起的是一个只监听 socket 的临时实例,
+      # 这时 TCP ping 不通,健康检查不会在建表脚本跑完之前就报 healthy。
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -ugame -p\"$$MYSQL_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["monitoring"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - gameserver
+
+volumes:
+  mysql-data:
