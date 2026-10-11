@@ -150,7 +150,7 @@ type Envelope struct {
 	// 服务端主动推送的消息(广播、踢人)seq 为 0。
 	Seq uint32 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
 	// 字段号按模块分段,新消息往对应区间里加:
-	//   10–19 网关(心跳)   20–29 登录   30–39 房间   40–49 同步(Lab 4)
+	//   10–19 网关(心跳)   20–29 登录   30–39 房间   40–49 同步
 	//
 	// Types that are valid to be assigned to Payload:
 	//
@@ -165,6 +165,8 @@ type Envelope struct {
 	//	*Envelope_LeaveRoomReq
 	//	*Envelope_RoomResp
 	//	*Envelope_RoomEvent
+	//	*Envelope_MoveInput
+	//	*Envelope_Snapshot
 	Payload       isEnvelope_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -313,6 +315,24 @@ func (x *Envelope) GetRoomEvent() *RoomEvent {
 	return nil
 }
 
+func (x *Envelope) GetMoveInput() *MoveInput {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_MoveInput); ok {
+			return x.MoveInput
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetSnapshot() *Snapshot {
+	if x != nil {
+		if x, ok := x.Payload.(*Envelope_Snapshot); ok {
+			return x.Snapshot
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Payload interface {
 	isEnvelope_Payload()
 }
@@ -361,6 +381,14 @@ type Envelope_RoomEvent struct {
 	RoomEvent *RoomEvent `protobuf:"bytes,35,opt,name=room_event,json=roomEvent,proto3,oneof"`
 }
 
+type Envelope_MoveInput struct {
+	MoveInput *MoveInput `protobuf:"bytes,40,opt,name=move_input,json=moveInput,proto3,oneof"`
+}
+
+type Envelope_Snapshot struct {
+	Snapshot *Snapshot `protobuf:"bytes,41,opt,name=snapshot,proto3,oneof"`
+}
+
 func (*Envelope_Ping) isEnvelope_Payload() {}
 
 func (*Envelope_Pong) isEnvelope_Payload() {}
@@ -382,6 +410,10 @@ func (*Envelope_LeaveRoomReq) isEnvelope_Payload() {}
 func (*Envelope_RoomResp) isEnvelope_Payload() {}
 
 func (*Envelope_RoomEvent) isEnvelope_Payload() {}
+
+func (*Envelope_MoveInput) isEnvelope_Payload() {}
+
+func (*Envelope_Snapshot) isEnvelope_Payload() {}
 
 // Ping 兼作心跳:客户端定期发;服务端在 idle timeout 内收不到任何帧就踢人。
 type Ping struct {
@@ -951,12 +983,203 @@ func (x *RoomEvent) GetRoom() *RoomInfo {
 	return nil
 }
 
+// MoveInput 是玩家「现在想往哪个方向走」,不是「走一步」:服务端每个 tick 按最近一次收到的方向移动,
+// 直到收到新的方向(停下就发 0,0)。同一个 tick 里收到多个,只有最后一个生效(D16)。没有应答。
+type MoveInput struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Seq           uint32                 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`                // 客户端自增的输入序号,快照里回显最后一个被应用的(D19)
+	DirX          float32                `protobuf:"fixed32,2,opt,name=dir_x,json=dirX,proto3" json:"dir_x,omitempty"` // 方向向量。服务端把长度截到 1 以内,所以发 (100, 0) 和 (1, 0) 一样快
+	DirY          float32                `protobuf:"fixed32,3,opt,name=dir_y,json=dirY,proto3" json:"dir_y,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MoveInput) Reset() {
+	*x = MoveInput{}
+	mi := &file_game_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MoveInput) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MoveInput) ProtoMessage() {}
+
+func (x *MoveInput) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MoveInput.ProtoReflect.Descriptor instead.
+func (*MoveInput) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *MoveInput) GetSeq() uint32 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *MoveInput) GetDirX() float32 {
+	if x != nil {
+		return x.DirX
+	}
+	return 0
+}
+
+func (x *MoveInput) GetDirY() float32 {
+	if x != nil {
+		return x.DirY
+	}
+	return 0
+}
+
+type PlayerState struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId      uint64                 `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	X             float32                `protobuf:"fixed32,2,opt,name=x,proto3" json:"x,omitempty"`
+	Y             float32                `protobuf:"fixed32,3,opt,name=y,proto3" json:"y,omitempty"`
+	LastInputSeq  uint32                 `protobuf:"varint,4,opt,name=last_input_seq,json=lastInputSeq,proto3" json:"last_input_seq,omitempty"` // 这个玩家最后一个被应用的 MoveInput.seq,0 表示还没收到过
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlayerState) Reset() {
+	*x = PlayerState{}
+	mi := &file_game_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlayerState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlayerState) ProtoMessage() {}
+
+func (x *PlayerState) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlayerState.ProtoReflect.Descriptor instead.
+func (*PlayerState) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *PlayerState) GetPlayerId() uint64 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *PlayerState) GetX() float32 {
+	if x != nil {
+		return x.X
+	}
+	return 0
+}
+
+func (x *PlayerState) GetY() float32 {
+	if x != nil {
+		return x.Y
+	}
+	return 0
+}
+
+func (x *PlayerState) GetLastInputSeq() uint32 {
+	if x != nil {
+		return x.LastInputSeq
+	}
+	return 0
+}
+
+// Snapshot 是房间在一个 tick 之后的全量状态,每个 tick 发给房间里所有人(D18)。
+type Snapshot struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RoomId        uint32                 `protobuf:"varint,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
+	Tick          uint64                 `protobuf:"varint,2,opt,name=tick,proto3" json:"tick,omitempty"`      // 房间建立以来的 tick 编号,每次严格加 1
+	Players       []*PlayerState         `protobuf:"bytes,3,rep,name=players,proto3" json:"players,omitempty"` // 按加入顺序
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Snapshot) Reset() {
+	*x = Snapshot{}
+	mi := &file_game_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Snapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Snapshot) ProtoMessage() {}
+
+func (x *Snapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_game_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
+func (*Snapshot) Descriptor() ([]byte, []int) {
+	return file_game_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *Snapshot) GetRoomId() uint32 {
+	if x != nil {
+		return x.RoomId
+	}
+	return 0
+}
+
+func (x *Snapshot) GetTick() uint64 {
+	if x != nil {
+		return x.Tick
+	}
+	return 0
+}
+
+func (x *Snapshot) GetPlayers() []*PlayerState {
+	if x != nil {
+		return x.Players
+	}
+	return nil
+}
+
 var File_game_proto protoreflect.FileDescriptor
 
 const file_game_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"game.proto\x12\x04game\"\xc2\x04\n" +
+	"game.proto\x12\x04game\"\xa2\x05\n" +
 	"\bEnvelope\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\rR\x03seq\x12 \n" +
 	"\x04ping\x18\n" +
@@ -975,7 +1198,10 @@ const file_game_proto_rawDesc = "" +
 	"\x0eleave_room_req\x18! \x01(\v2\x12.game.LeaveRoomReqH\x00R\fleaveRoomReq\x12-\n" +
 	"\troom_resp\x18\" \x01(\v2\x0e.game.RoomRespH\x00R\broomResp\x120\n" +
 	"\n" +
-	"room_event\x18# \x01(\v2\x0f.game.RoomEventH\x00R\troomEventB\t\n" +
+	"room_event\x18# \x01(\v2\x0f.game.RoomEventH\x00R\troomEvent\x120\n" +
+	"\n" +
+	"move_input\x18( \x01(\v2\x0f.game.MoveInputH\x00R\tmoveInput\x12,\n" +
+	"\bsnapshot\x18) \x01(\v2\x0e.game.SnapshotH\x00R\bsnapshotB\t\n" +
 	"\apayload\",\n" +
 	"\x04Ping\x12$\n" +
 	"\x0eclient_time_ms\x18\x01 \x01(\x03R\fclientTimeMs\"R\n" +
@@ -1011,7 +1237,20 @@ const file_game_proto_rawDesc = "" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\n" +
 	"\n" +
 	"\x06JOINED\x10\x01\x12\b\n" +
-	"\x04LEFT\x10\x02*\xb2\x01\n" +
+	"\x04LEFT\x10\x02\"G\n" +
+	"\tMoveInput\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\rR\x03seq\x12\x13\n" +
+	"\x05dir_x\x18\x02 \x01(\x02R\x04dirX\x12\x13\n" +
+	"\x05dir_y\x18\x03 \x01(\x02R\x04dirY\"l\n" +
+	"\vPlayerState\x12\x1b\n" +
+	"\tplayer_id\x18\x01 \x01(\x04R\bplayerId\x12\f\n" +
+	"\x01x\x18\x02 \x01(\x02R\x01x\x12\f\n" +
+	"\x01y\x18\x03 \x01(\x02R\x01y\x12$\n" +
+	"\x0elast_input_seq\x18\x04 \x01(\rR\flastInputSeq\"d\n" +
+	"\bSnapshot\x12\x17\n" +
+	"\aroom_id\x18\x01 \x01(\rR\x06roomId\x12\x12\n" +
+	"\x04tick\x18\x02 \x01(\x04R\x04tick\x12+\n" +
+	"\aplayers\x18\x03 \x03(\v2\x11.game.PlayerStateR\aplayers*\xb2\x01\n" +
 	"\x04Code\x12\x06\n" +
 	"\x02OK\x10\x00\x12\x0f\n" +
 	"\vBAD_REQUEST\x10\x01\x12\x0f\n" +
@@ -1038,7 +1277,7 @@ func file_game_proto_rawDescGZIP() []byte {
 }
 
 var file_game_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_game_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_game_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_game_proto_goTypes = []any{
 	(Code)(0),             // 0: game.Code
 	(RoomEvent_Kind)(0),   // 1: game.RoomEvent.Kind
@@ -1055,6 +1294,9 @@ var file_game_proto_goTypes = []any{
 	(*RoomInfo)(nil),      // 12: game.RoomInfo
 	(*RoomResp)(nil),      // 13: game.RoomResp
 	(*RoomEvent)(nil),     // 14: game.RoomEvent
+	(*MoveInput)(nil),     // 15: game.MoveInput
+	(*PlayerState)(nil),   // 16: game.PlayerState
+	(*Snapshot)(nil),      // 17: game.Snapshot
 }
 var file_game_proto_depIdxs = []int32{
 	3,  // 0: game.Envelope.ping:type_name -> game.Ping
@@ -1068,16 +1310,19 @@ var file_game_proto_depIdxs = []int32{
 	11, // 8: game.Envelope.leave_room_req:type_name -> game.LeaveRoomReq
 	13, // 9: game.Envelope.room_resp:type_name -> game.RoomResp
 	14, // 10: game.Envelope.room_event:type_name -> game.RoomEvent
-	0,  // 11: game.LoginResp.code:type_name -> game.Code
-	0,  // 12: game.RoomResp.code:type_name -> game.Code
-	12, // 13: game.RoomResp.room:type_name -> game.RoomInfo
-	1,  // 14: game.RoomEvent.kind:type_name -> game.RoomEvent.Kind
-	12, // 15: game.RoomEvent.room:type_name -> game.RoomInfo
-	16, // [16:16] is the sub-list for method output_type
-	16, // [16:16] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	15, // 11: game.Envelope.move_input:type_name -> game.MoveInput
+	17, // 12: game.Envelope.snapshot:type_name -> game.Snapshot
+	0,  // 13: game.LoginResp.code:type_name -> game.Code
+	0,  // 14: game.RoomResp.code:type_name -> game.Code
+	12, // 15: game.RoomResp.room:type_name -> game.RoomInfo
+	1,  // 16: game.RoomEvent.kind:type_name -> game.RoomEvent.Kind
+	12, // 17: game.RoomEvent.room:type_name -> game.RoomInfo
+	16, // 18: game.Snapshot.players:type_name -> game.PlayerState
+	19, // [19:19] is the sub-list for method output_type
+	19, // [19:19] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_game_proto_init() }
@@ -1097,6 +1342,8 @@ func file_game_proto_init() {
 		(*Envelope_LeaveRoomReq)(nil),
 		(*Envelope_RoomResp)(nil),
 		(*Envelope_RoomEvent)(nil),
+		(*Envelope_MoveInput)(nil),
+		(*Envelope_Snapshot)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1104,7 +1351,7 @@ func file_game_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_game_proto_rawDesc), len(file_game_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   13,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

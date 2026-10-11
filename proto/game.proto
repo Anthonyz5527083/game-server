@@ -13,7 +13,7 @@ message Envelope {
   uint32 seq = 1;
 
   // 字段号按模块分段,新消息往对应区间里加:
-  //   10–19 网关(心跳)   20–29 登录   30–39 房间   40–49 同步(Lab 4)
+  //   10–19 网关(心跳)   20–29 登录   30–39 房间   40–49 同步
   oneof payload {
     Ping ping = 10;
     Pong pong = 11;
@@ -28,6 +28,9 @@ message Envelope {
     LeaveRoomReq leave_room_req = 33;
     RoomResp room_resp = 34;
     RoomEvent room_event = 35;
+
+    MoveInput move_input = 40;
+    Snapshot snapshot = 41;
   }
 }
 
@@ -109,4 +112,28 @@ message RoomEvent {
   Kind kind = 1;
   uint64 player_id = 2; // 谁进来了 / 谁走了
   RoomInfo room = 3;    // 事件发生之后的房间
+}
+
+// ---------- 同步(进了房间之后才有意义) ----------
+
+// MoveInput 是玩家「现在想往哪个方向走」,不是「走一步」:服务端每个 tick 按最近一次收到的方向移动,
+// 直到收到新的方向(停下就发 0,0)。同一个 tick 里收到多个,只有最后一个生效(D16)。没有应答。
+message MoveInput {
+  uint32 seq = 1;  // 客户端自增的输入序号,快照里回显最后一个被应用的(D19)
+  float dir_x = 2; // 方向向量。服务端把长度截到 1 以内,所以发 (100, 0) 和 (1, 0) 一样快
+  float dir_y = 3;
+}
+
+message PlayerState {
+  uint64 player_id = 1;
+  float x = 2;
+  float y = 3;
+  uint32 last_input_seq = 4; // 这个玩家最后一个被应用的 MoveInput.seq,0 表示还没收到过
+}
+
+// Snapshot 是房间在一个 tick 之后的全量状态,每个 tick 发给房间里所有人(D18)。
+message Snapshot {
+  uint32 room_id = 1;
+  uint64 tick = 2;                  // 房间建立以来的 tick 编号,每次严格加 1
+  repeated PlayerState players = 3; // 按加入顺序
 }
