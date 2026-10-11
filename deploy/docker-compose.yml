@@ -46,6 +46,9 @@ services:
       interval: 5s
       timeout: 2s
       retries: 10
+      # 启动阶段每秒探一次:没有这两行,第一次探测要等满一个 interval(5 s),Redis 早就好了也要干等(D26)
+      start_period: 10s
+      start_interval: 1s
 
   mysql:
     image: mysql:8.4
@@ -68,6 +71,7 @@ services:
       timeout: 3s
       retries: 30
       start_period: 30s
+      start_interval: 1s
 
   prometheus:
     image: prom/prometheus:v3.5.0
