@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Anthonyz5527083/game-server/internal/gateway"
+	"github.com/Anthonyz5527083/game-server/internal/metrics"
 	"github.com/Anthonyz5527083/game-server/internal/pb"
 	"github.com/Anthonyz5527083/game-server/internal/sim"
 )
@@ -288,22 +289,27 @@ func (m *Manager) infoLocked(r *room) Info {
 // 如果放到锁外发,两个人同时加入时,第三个人可能先收到「C 进来了 [A B C]」
 // 再收到「B 进来了 [A B]」,他看到的房间就倒退了。
 func (m *Manager) broadcastLocked(r *room, kind pb.RoomEvent_Kind, actor uint64, info Info) {
-	frame, err := gateway.Marshal(&pb.Envelope{Payload: &pb.Envelope_RoomEvent{RoomEvent: &pb.RoomEvent{
+	env := &pb.Envelope{Payload: &pb.Envelope_RoomEvent{RoomEvent: &pb.RoomEvent{
 		Kind:     kind,
 		PlayerId: actor,
 		Room:     ToProto(info),
-	}}})
+	}}}
+	frame, err := gateway.Marshal(env)
 	if err != nil {
 		m.log.Error("encode room event", "room", r.id, "err", err)
 		return
 	}
+	sent := 0
 	for _, mb := range r.members {
 		if mb.playerID == actor {
 			continue
 		}
 		// 发送失败说明对方的连接已经在关(或者因为队列满刚被关):它的 OnClose 会调 Leave,这里不用管。
-		_ = mb.conn.SendFrame(frame)
+		if mb.conn.SendFrame(frame) == nil {
+			sent++
+		}
 	}
+	metrics.Sent(env, sent)
 }
 
 func (m *Manager) markDirtyLocked(id uint32) {

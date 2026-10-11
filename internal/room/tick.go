@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/Anthonyz5527083/game-server/internal/gateway"
+	"github.com/Anthonyz5527083/game-server/internal/metrics"
 	"github.com/Anthonyz5527083/game-server/internal/pb"
 )
 
@@ -27,9 +28,8 @@ func (m *Manager) runTicks(r *room) {
 			return
 		case now := <-t.C:
 			// 准点程度:这一次实际醒来的时刻,减去离它最近的理想时刻 start + k·interval。
-			late := lateness(start, now, time.Now(), m.interval)
-			cost := m.tick(r, dt)
-			observeTick(cost, late)
+			metrics.TickLateness.Observe(lateness(start, now, time.Now(), m.interval).Seconds())
+			metrics.TickDuration.Observe(m.tick(r, dt).Seconds())
 		}
 	}
 }
@@ -67,7 +67,7 @@ func (m *Manager) tick(r *room, dt float64) time.Duration {
 			sent++
 		}
 	}
-	observeSent(env, sent)
+	metrics.Sent(env, sent)
 	return time.Since(begin)
 }
 
@@ -89,8 +89,3 @@ func snapshotEnvelope(r *room) *pb.Envelope {
 		Players: states,
 	}}}
 }
-
-// 下面两个钩子 Lab 5 接 Prometheus;现在什么都不做。
-func observeTick(cost, late time.Duration) {}
-
-func observeSent(env *pb.Envelope, n int) {}

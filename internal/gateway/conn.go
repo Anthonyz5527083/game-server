@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Anthonyz5527083/game-server/internal/metrics"
 	"github.com/Anthonyz5527083/game-server/internal/pb"
 )
 
@@ -72,11 +73,15 @@ func (c *Conn) Send(env *pb.Envelope) error {
 	if err != nil {
 		return err
 	}
-	return c.SendFrame(frame)
+	if err := c.SendFrame(frame); err != nil {
+		return err
+	}
+	metrics.Sent(env, 1)
+	return nil
 }
 
 // SendFrame 投递一帧已经编码好的字节。广播时给每条连接传同一个 slice,不复制;
-// 所以调用方交出 frame 之后不能再改它。
+// 所以调用方交出 frame 之后不能再改它。SendFrame 不知道帧的类型,发送计数由调用方记(metrics.Sent)。
 //
 // 队列满时选「断开」,不选「阻塞」也不选「丢帧」(D4):
 // 阻塞会让广播方被一个慢客户端拖住,房间里其他人一起卡;
@@ -110,6 +115,7 @@ func (c *Conn) SendAndClose(env *pb.Envelope, reason string) {
 	select {
 	case <-c.closed:
 	case c.sendCh <- outFrame{data: frame, closeAfter: reason}:
+		metrics.Sent(env, 1)
 	default:
 		c.closeWith(reason, nil)
 	}
@@ -173,6 +179,7 @@ func (c *Conn) readFrames(h Handler) (string, error) {
 		if err != nil {
 			return ReasonProtocolError, err
 		}
+		metrics.Received(env)
 		c.dispatch(h, env)
 	}
 }
