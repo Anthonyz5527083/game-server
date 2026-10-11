@@ -2,6 +2,7 @@
 // 另起一个 admin HTTP 端口挂 /metrics 和 pprof。收到 SIGINT / SIGTERM 后关闭全部连接(并清理会话)再退出。
 //
 // token 密钥从环境变量 GS_TOKEN_SECRET 读,不走 flag:flag 会出现在 ps 输出和 shell 历史里。
+// MySQL 的 DSN 带密码,同理走环境变量 GS_MYSQL_DSN;不设就不连 MySQL(不查账号表、不记战绩)。
 package main
 
 import (
@@ -75,11 +76,37 @@ func run(logger *slog.Logger, cfg config) error {
 	}
 	cancel()
 
-	rooms := room.NewManager(room.Config{Capacity: roomCapacity, TickInterval: tickInterval, Logger: logger})
+	// MySQL 可选。和 Redis 一样,启动时连不上只打警告:账号查询会失败(登录回 UNAVAILABLE),
+	// 战绩写失败会重试、最后丢弃,MySQL 起来之后自动恢复。
+	var accounts lobby.AccountStore
+	var records room.RecordSink
+	if dsn := os.Getenv("GS_MYSQL_DSN"); dsn != "" {
+		db, err := storage.OpenMySQL(dsn)
+		if err != nil {
+			return fmt.Errorf("GS_MYSQL_DSN: %w", err)
+		}
+		defer db.Close()
+		pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := db.PingContext(pingCtx); err != nil {
+			logger.Warn("mysql not reachable yet, logins will fail until it is", "err", err)
+		}
+		cancel()
+		accounts, records = storage.NewAccounts(db), storage.NewMatchRecords(db)
+	} else {
+		logger.Warn("GS_MYSQL_DSN not set: accounts are not checked and match records are not saved")
+	}
+
+	rooms := room.NewManager(room.Config{
+		Capacity:      roomCapacity,
+		TickInterval:  tickInterval,
+		RecordMatches: records != nil,
+		Logger:        logger,
+	})
 	defer rooms.Close()
 	lb := lobby.New(lobby.Config{
 		Signer:       signer,
 		Sessions:     storage.NewSessions(rdb, cfg.sessionTTL),
+		Accounts:     accounts,
 		Rooms:        rooms,
 		Node:         cfg.node,
 		LoginTimeout: cfg.loginTimeout,
@@ -115,6 +142,9 @@ func run(logger *slog.Logger, cfg config) error {
 	var bg sync.WaitGroup
 	bg.Go(func() { lb.Run(bgCtx) })                                                      // 会话续期
 	bg.Go(func() { rooms.RunMirror(bgCtx, storage.NewRoomMirror(rdb), 30*time.Second) }) // 房间镜像
+	if records != nil {
+		bg.Go(func() { rooms.RunRecorder(bgCtx, records) }) // 战绩:关停时把最后一批解散的房间写完
+	}
 	err = srv.ListenAndServe(ctx)
 	bgCancel()
 	bg.Wait()

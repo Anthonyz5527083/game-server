@@ -785,3 +785,58 @@ func TestInputFloodOverNetwork(t *testing.T) {
 		t.Fatal("last input (seq 1000) never applied")
 	}
 }
+
+// ---------- 账号表(MySQL 的替身) ----------
+
+// fakeAccounts:ids 里的玩家存在;err 非空时所有查询都返回它。
+// 测试 goroutine 改 err、服务端的读 goroutine 读 err,中间只隔着一条 TCP 连接,
+// race detector 不把网络收发当成同步,所以要加锁。
+type fakeAccounts struct {
+	mu  sync.Mutex
+	ids map[uint64]bool
+	err error
+}
+
+func (f *fakeAccounts) Exists(_ context.Context, pid uint64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ids[pid], f.err
+}
+
+func (f *fakeAccounts) setErr(err error) {
+	f.mu.Lock()
+	f.err = err
+	f.mu.Unlock()
+}
+
+// T2.9 token 签名合法,但账号表里没有这个玩家:回 NO_ACCOUNT 并断开;有的照常登录。
+func TestLoginUnknownAccount(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.Accounts = &fakeAccounts{ids: map[uint64]bool{1: true}} })
+	if code := e.dial().login(e.token(1)).GetCode(); code != pb.Code_OK {
+		t.Fatalf("existing account: %v", code)
+	}
+	c := e.dial()
+	if code := c.login(e.token(2)).GetCode(); code != pb.Code_NO_ACCOUNT {
+		t.Fatalf("unknown account: %v, want NO_ACCOUNT", code)
+	}
+	c.expectEOF()
+	e.closes.waitFor(t, ReasonNoAccount)
+	if _, _, ok := e.session(2); ok {
+		t.Fatal("session written for unknown account")
+	}
+}
+
+// 账号库不可用:回 UNAVAILABLE,连接保留,恢复后同一条连接重试能登录。
+func TestLoginWhileAccountStoreDown(t *testing.T) {
+	acc := &fakeAccounts{ids: map[uint64]bool{1: true}, err: errors.New("mysql down")}
+	e := newEnv(t, func(c *Config) { c.Accounts = acc })
+	c := e.dial()
+	if code := c.login(e.token(1)).GetCode(); code != pb.Code_UNAVAILABLE {
+		t.Fatalf("store down: %v, want UNAVAILABLE", code)
+	}
+	c.ping() // 连接还在
+	acc.setErr(nil)
+	if code := c.login(e.token(1)).GetCode(); code != pb.Code_OK {
+		t.Fatalf("after recovery: %v", code)
+	}
+}

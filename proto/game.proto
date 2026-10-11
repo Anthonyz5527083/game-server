@@ -43,6 +43,7 @@ enum Code {
   BAD_TOKEN = 10;         // token 格式不对或签名不对
   TOKEN_EXPIRED = 11;
   ALREADY_LOGGED_IN = 12; // 这条连接已经登录过了
+  NO_ACCOUNT = 13;        // token 合法,但账号表里没有这个玩家(启用了 MySQL 时才检查)
 
   ROOM_NOT_FOUND = 20;
   ROOM_FULL = 21;

@@ -29,7 +29,8 @@ import (
 const (
 	ReasonLoginTimeout = "login timeout"
 	ReasonBadToken     = "bad token"
-	ReasonReplaced     = "replaced" // 同一账号在另一条连接上登录了
+	ReasonNoAccount    = "no account" // token 合法,但账号表里没有这个玩家
+	ReasonReplaced     = "replaced"   // 同一账号在另一条连接上登录了
 )
 
 // SessionStore 是大厅对会话存储的全部要求。生产用 *storage.Sessions(Redis)。
@@ -39,10 +40,17 @@ type SessionStore interface {
 	Delete(ctx context.Context, playerID uint64, owner string) (bool, error)
 }
 
+// AccountStore 查账号存不存在。生产用 *storage.Accounts(MySQL)。
+type AccountStore interface {
+	Exists(ctx context.Context, playerID uint64) (bool, error)
+}
+
 type Config struct {
 	Signer   *auth.Signer
 	Sessions SessionStore
 	Rooms    *room.Manager
+	// Accounts 为 nil 时不查账号表:只要 token 签名对就能登录(没配 MySQL 的开发环境)。
+	Accounts AccountStore
 
 	// Node 标识本进程,和连接 ID 拼成会话的 owner。多实例部署时每个进程要不同。
 	Node string
@@ -303,6 +311,24 @@ func (l *Lobby) handleLogin(cl *client, seq uint32, req *pb.LoginReq) {
 		c.Logger().Info("login rejected", "err", err)
 		c.SendAndClose(loginResp(seq, code, 0), ReasonBadToken)
 		return
+	}
+
+	// 账号表:签名合法只说明 token 是我们签的,账号可能已经删了。查不到直接拒绝并断开;
+	// 查询本身出错(MySQL 不通)回 UNAVAILABLE,连接留着,客户端可以重试。
+	if l.cfg.Accounts != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), l.cfg.StoreTimeout)
+		ok, err := l.cfg.Accounts.Exists(ctx, pid)
+		cancel()
+		if err != nil {
+			c.Logger().Warn("login: account store unavailable", "player", pid, "err", err)
+			_ = c.Send(loginResp(seq, pb.Code_UNAVAILABLE, 0))
+			return
+		}
+		if !ok {
+			c.Logger().Info("login rejected: no such account", "player", pid)
+			c.SendAndClose(loginResp(seq, pb.Code_NO_ACCOUNT, 0), ReasonNoAccount)
+			return
+		}
 	}
 
 	// 先写 Redis,成功了再改内存:Redis 失败时内存里什么都没变,客户端可以直接重试。

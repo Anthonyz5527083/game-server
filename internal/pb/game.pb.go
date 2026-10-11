@@ -31,6 +31,7 @@ const (
 	Code_BAD_TOKEN         Code = 10 // token 格式不对或签名不对
 	Code_TOKEN_EXPIRED     Code = 11
 	Code_ALREADY_LOGGED_IN Code = 12 // 这条连接已经登录过了
+	Code_NO_ACCOUNT        Code = 13 // token 合法,但账号表里没有这个玩家(启用了 MySQL 时才检查)
 	Code_ROOM_NOT_FOUND    Code = 20
 	Code_ROOM_FULL         Code = 21
 	Code_ALREADY_IN_ROOM   Code = 22 // 一个玩家同一时间只能在一个房间里
@@ -46,6 +47,7 @@ var (
 		10: "BAD_TOKEN",
 		11: "TOKEN_EXPIRED",
 		12: "ALREADY_LOGGED_IN",
+		13: "NO_ACCOUNT",
 		20: "ROOM_NOT_FOUND",
 		21: "ROOM_FULL",
 		22: "ALREADY_IN_ROOM",
@@ -58,6 +60,7 @@ var (
 		"BAD_TOKEN":         10,
 		"TOKEN_EXPIRED":     11,
 		"ALREADY_LOGGED_IN": 12,
+		"NO_ACCOUNT":        13,
 		"ROOM_NOT_FOUND":    20,
 		"ROOM_FULL":         21,
 		"ALREADY_IN_ROOM":   22,
@@ -1250,7 +1253,7 @@ const file_game_proto_rawDesc = "" +
 	"\bSnapshot\x12\x17\n" +
 	"\aroom_id\x18\x01 \x01(\rR\x06roomId\x12\x12\n" +
 	"\x04tick\x18\x02 \x01(\x04R\x04tick\x12+\n" +
-	"\aplayers\x18\x03 \x03(\v2\x11.game.PlayerStateR\aplayers*\xb2\x01\n" +
+	"\aplayers\x18\x03 \x03(\v2\x11.game.PlayerStateR\aplayers*\xc2\x01\n" +
 	"\x04Code\x12\x06\n" +
 	"\x02OK\x10\x00\x12\x0f\n" +
 	"\vBAD_REQUEST\x10\x01\x12\x0f\n" +
@@ -1258,7 +1261,9 @@ const file_game_proto_rawDesc = "" +
 	"\tBAD_TOKEN\x10\n" +
 	"\x12\x11\n" +
 	"\rTOKEN_EXPIRED\x10\v\x12\x15\n" +
-	"\x11ALREADY_LOGGED_IN\x10\f\x12\x12\n" +
+	"\x11ALREADY_LOGGED_IN\x10\f\x12\x0e\n" +
+	"\n" +
+	"NO_ACCOUNT\x10\r\x12\x12\n" +
 	"\x0eROOM_NOT_FOUND\x10\x14\x12\r\n" +
 	"\tROOM_FULL\x10\x15\x12\x13\n" +
 	"\x0fALREADY_IN_ROOM\x10\x16\x12\x0f\n" +
