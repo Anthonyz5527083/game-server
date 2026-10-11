@@ -4,17 +4,22 @@
 
 ## 压测数字
 
-500 条连接、63 个房间,每个客户端每秒 20 个移动输入 + 5 个 Ping,服务端每秒入站 12,500 条、出站 12,500 条消息。预热 5 秒、测量 30 秒,同一配置跑 3 次:
+500 条连接、63 个房间,每个客户端每秒 20 个移动输入 + 5 个 Ping,服务端每秒入站 12,500 条、出站 12,500 条消息。预热 5 秒、测量 30 秒,同一配置跑 3 次。bot 和服务端在同一台机器上,按网络路径分两组:
 
 | | p50 | p99 | max |
 |---|---|---|---|
-| Ping RTT | 353–375 µs | **1.08–1.40 ms** | 3.0–5.5 ms |
-| 快照间隔(客户端看到的 20Hz 节拍) | 50.00 ms | **51.40–51.64 ms** | 52.9–54.1 ms |
-| 服务端一次 tick(推进 + 编码 + 投递 8 人) | 5–10 µs | 25–50 µs | |
+| Ping RTT,容器内 loopback | 121–140 µs | **0.44–0.52 ms** | 1.1–3.8 ms |
+| Ping RTT,宿主机 127.0.0.1(绕经 Windows,见下) | 353–375 µs | **1.08–1.40 ms** | 3.0–5.5 ms |
+| 快照间隔(客户端看到的 20Hz 节拍) | 50.00 ms | **51.1–51.6 ms** | 52.1–55.2 ms |
+| 服务端一次 tick(推进 + 编码 + 投递 8 人) | 5–10 µs | 10–50 µs | |
 
-快照到达率 100.000%(30 万个里多 2 个到少 1 个),0 失败、0 断线;服务端约 0.5 个核、RSS 45–55 MB。连接数往上加,拐点在 2000–3000 之间,先撑不住的是每条消息一次系统调用和 goroutine 唤醒带来的尾延迟,不是 CPU。
+快照到达率 99.989%–100.002%,0 失败、0 断线,服务端 0.4–0.6 个核。
 
-环境是 i5-14600KF、WSL2、bot 和服务端同机走 loopback。方法、火焰图、拐点、以及第一版压测客户端为什么量出了 11 ms 的 P99,见 [docs/BENCHMARK.md](docs/BENCHMARK.md)。
+两组差 3 倍,差在网络路径,不在程序。这台 WSL2 开着 mirrored 网络模式,宿主机上连 127.0.0.1 的 TCP 会绕到 Windows 再回来;容器有自己的网络命名空间,走的才是内核 loopback。排查过程见 BENCHMARK B6.2。
+
+连接数往上加(容器内,每档跑 1 次):6000 连接时仍然全部达标,快照间隔 p99 51.9 ms、RTT p99 1.6 ms。拐点在 8000–10000 之间,先劣化的是尾延迟,这时服务端 6 核、bot 6.6 核在同一台 20 线程的机器上抢 CPU。
+
+环境是 i5-14600KF、WSL2。方法、火焰图、拐点,以及第一版压测客户端为什么量出了 11 ms 的 P99,见 [docs/BENCHMARK.md](docs/BENCHMARK.md)。
 
 ## 架构
 
@@ -58,6 +63,8 @@ Redis 可以用 `make redis`(Docker)起,也可以用本机装的。不设 `GS_MY
 
 ```bash
 make watch                              # 玩家 1 快速匹配进房间,绕圈走,打印快照
+
+export GS_TOKEN_SECRET=local-dev-only-not-a-secret   # 和 Makefile、compose 里的开发密钥一样;make 会自己带上,直接跑 bin/ 要先设
 ./bin/botclient -player 2 -watch        # 玩家 2 进同一个房间,看着玩家 1 的坐标变
 ```
 
@@ -74,21 +81,26 @@ tick=16     1:(62.9,50.6)#3  2:(57.1,57.1)#0
 压测(500 连接,预热 5 秒 + 测量 30 秒):
 
 ```bash
-make bench
+make bench    # bot 和服务端都在宿主机上;WSL2 开着 mirrored 网络模式时,量到的是上面第二行那条绕路
 curl -s 127.0.0.1:9100/metrics | grep ^gameserver_   # 另一个终端,压测中看在线人数、房间数、消息计数
 ```
 
 ### Docker Compose 一键起
 
 ```bash
-make up       # docker compose -f deploy/docker-compose.yml up -d --build:gameserver + Redis + MySQL
-make bot      # 用宿主机上的 botclient 连进去(make up 不会编译宿主机的 bin/,make bot 会)
-make down     # 停掉;make down-v 连 MySQL 数据卷一起删
+make up             # docker compose -f deploy/docker-compose.yml up -d --build:gameserver + Redis + MySQL
+make bot            # 用宿主机上的 botclient 连进去(make up 不会编译宿主机的 bin/,make bot 会)
+make bench-compose  # 500 连接压测,bot 跑在 gameserver 容器里(容器内 loopback,上面第一行数字就是这么测的)
+make down           # 停掉;make down-v 连 MySQL 数据卷一起删
 ```
 
 MySQL 第一次启动时自动执行 [deploy/mysql/init.sql](deploy/mysql/init.sql):建账号表和战绩表,种子账号 1–10000。所有端口只绑 127.0.0.1。
 
-> Compose 这一套还没有在 Docker 上实际跑过(开发机上还没装 Docker)。镜像里用的构建命令、建表脚本和 MySQL 8.4 已经单独验证过,详见 BENCHMARK「还没测的」。
+运行镜像压缩后 9.8 MB(distroless/static + 三个静态二进制)。`make up` 到第一个 bot 能登录:数据卷已存在时约 2 秒,第一次(MySQL 要初始化)8–9 秒。
+
+在容器上压测时别从宿主机连映射端口:那条路要经过 docker-proxy,p99 会涨到 1.6–2.1 ms,docker-proxy 自己还要吃掉 1 个多核(D27)。
+
+`docker compose -f deploy/docker-compose.yml --profile monitoring up -d` 会另起一个 Prometheus(127.0.0.1:9090),每 5 秒抓一次 gameserver。
 
 ### 配置
 

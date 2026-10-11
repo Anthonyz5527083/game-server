@@ -433,6 +433,25 @@ go-redis 另外间接带进来 `xxhash`;miniredis 带进来 `gopher-lua`(执行 
 
 ---
 
+### D29 正式数字两条网络路径都列;拐点以容器内 loopback 为准
+
+**决定**:500 连接的正式数字同时列两组:「容器内 loopback」和「宿主机 127.0.0.1」。拐点用容器内那组,bot 用 `docker compose exec gameserver botclient` 跑在服务端同一个容器里;`make bench-compose` 就是这条命令。
+
+**为什么是这个**
+- 这台 WSL2 开着 mirrored 网络模式,宿主机上连 127.0.0.1 的 TCP 会经 `loopback0` 网卡绕到 Windows 再回来(路由表 127),不走内核的 `lo`。同一个二进制,走这条路 RTT p50 约 430 µs,走容器里的内核 loopback 约 130 µs;3000 连接时,快照间隔 p99 一个是 146 ms,一个是 51 ms。在绕路上量到的拐点是 WSL 的,不是服务端的。
+- 排除过程在 BENCHMARK B6.2:二进制、cgroup、seccomp 都换过,起作用的只有网络命名空间。之前在绕路上得出的结论(「拐点 2000–3000,先崩的是系统调用和唤醒」)已经改掉。容器内的拐点在 8000–10000。
+- 容器内 loopback 是这台机器上最接近「原生 Linux 内核 loopback」的路径。容器里的本地端口也多(28k 个,宿主机只有 4096 个),单个 bot 进程能开到上万条连接。
+- 旧数字不删。它们是实测、复现过的;删了,这个坑就看不出来了。在 WSL 上照 README 跑 `make bench`,得到的正是那一组。
+
+**为什么不是别的**
+- 把 WSL 改回 NAT 模式再测:mirrored 是这台开发机现有的全局配置,为了压测去改它会影响别的东西;而且 NAT 模式下宿主机 127.0.0.1 走不走 `lo`,也得重新验证。
+- 服务端改听 127.0.0.2:只有一个方向不绕。bot 的源地址还是 127.0.0.1,回包照样绕出去,实测 p50 257 µs,夹在两者中间。要彻底不绕,得给 bot 加一个绑定源地址的参数。
+- 用映射端口(宿主机 127.0.0.1:7777)压容器里的服务端:多了一层 docker-proxy,p99 1.6–2.1 ms,docker-proxy 自己用 1.2 个核,量到的主要是 docker-proxy(D27)。
+
+**什么时候会换**:换到原生 Linux,或者 bot 和服务端分两台机器时,宿主机的 loopback / 真实网卡就是正常路径,直接在宿主机跑 `make bench`,容器内那组只作对照。
+
+---
+
 ### D24 依赖:Prometheus 官方 Go 客户端
 
 | 依赖 | 用在哪 | 为什么要它 |
@@ -492,7 +511,7 @@ go-redis 另外间接带进来 `xxhash`;miniredis 带进来 `gopher-lua`(执行 
 
 **什么时候会换**:线上要在容器里现场排障(抓包、看文件)时,换成 alpine 或者 distroless 的 `:debug` 变体(带 busybox shell)。
 
-镜像体积(B6.1)还没量:开发机上还没有 Docker。
+**实测**(BENCHMARK B6.1):运行镜像压缩后 9.8 MB,解压后 27.8 MB,其中三个二进制 22.4 MB、distroless/static 基础层 5.4 MB(时区数据就占了 4.2 MB)。`docker compose exec gameserver botclient` 这条路实际用上了:B6.2 的容器内压测和拐点都是这么跑的。
 
 ---
 
@@ -505,13 +524,17 @@ go-redis 另外间接带进来 `xxhash`;miniredis 带进来 `gopher-lua`(执行 
 - 但它管不了运行中依赖重启(单独 `docker compose restart redis`),Kubernetes 里也没有 depends_on。真正的容错只能在应用里做,而应用早就这么写了(D7:先写 Redis 再改内存,失败回 UNAVAILABLE;续期覆盖写,Redis 丢数据能补回来)。
 - 应用不因为依赖不可用而退出,所以不会进入「崩溃 → 重启 → 依赖还没好 → 再崩溃」的循环。`restart: unless-stopped` 只兜真正的崩溃。
 - MySQL 的 healthcheck 走 TCP(`-h 127.0.0.1`):官方镜像初始化时先起一个只听 socket 的临时实例跑建表脚本,这时 TCP ping 不通,不会在表建好之前就报 healthy。
+- 两个 healthcheck 都加了 `start_interval: 1s`:`start_period` 内每秒探一次,过了启动期再按 `interval: 5s`。第一版只有 `interval`,第一次探测要等满 5 s,依赖一秒内就好了也得干等,数据卷已存在时 `up` 要 6.2 s;加上之后是 2.1 s(B6.3)。平时仍然 5 s 一次,不多占资源。
 
 **为什么不是别的**
 - 只靠应用重试:能工作,但第一次启动时日志里会有一串连接失败的警告,看着像出了问题。
+- 把 `interval` 直接改成 1 s:启动一样快,但服务一直在跑,每秒都要 exec 一次 `mysqladmin`,纯属浪费。
 - 只靠 depends_on:依赖运行中一重启,应用就得跟着重启,而且换个编排系统就没了。
 - 在应用里启动时阻塞等待依赖(连不上就一直重试、不开端口):依赖挂掉时整个服务不可用,连 Ping 都不回,健康检查和排障都更难。
 
 **什么时候会换**:上 Kubernetes 时,healthcheck 换成 readiness probe(依赖不通时报 not ready,让流量先别进来),应用侧的容错不变。
+
+**验证**(BENCHMARK B6.3 和 D26 一节):冷启动的 gameserver 日志里没有一次 `account store unavailable` 或 `NO_ACCOUNT`,说明 MySQL 没有在建表之前报 healthy。运行中依次停掉、再起来 Redis 和 MySQL:停着的时候登录回 `UNAVAILABLE`,起来后 5 ms(Redis)/ 856 ms(MySQL)就能登录。整个过程 gameserver 的 `RestartCount` 一直是 0。`docker stop` 522 ms 退出,退出码 0。
 
 ---
 
@@ -524,8 +547,12 @@ go-redis 另外间接带进来 `xxhash`;miniredis 带进来 `gopher-lua`(执行 
 - 服务名就是 DNS 名,配置里不出现 IP。
 - Docker Desktop(Mac / Windows)上 host 网络模式的支持有限制,bridge 在哪都一样。
 
-**为什么不是别的**:host 网络模式(`network_mode: host`)直接用宿主机的网络栈,没有 NAT、没有端口映射。
+**为什么不是别的**:host 网络模式(`network_mode: host`)直接用宿主机的网络栈,没有 NAT、没有端口映射。代价是没有隔离:容器里监听什么,宿主机上就暴露什么。
 
-**对压测数字的影响**(还没测,B6.2 要验证):bridge 模式下,从宿主机访问映射端口的包要经过 NAT,本机访问 127.0.0.1 时还可能经过 docker-proxy 这个用户态转发进程,每个包多一次拷贝和一次进程切换。BENCHMARK 里的数字是裸跑测的,服务端的 CPU 大头本来就是系统调用和调度(见火焰图),多一层转发预计会抬高 RTT。要比较得公平,压测客户端应该也放进同一个 compose 网络里跑(`docker compose run`),或者两边都用 host 网络。
+**对压测数字的影响**(B6.2 实测,500 连接各 3 次)
+- 映射端口确实贵:宿主机连 127.0.0.1:7777 要经过 docker-proxy 这个用户态转发进程。RTT p99 1.6–2.1 ms,是直连容器 IP 的 3–4 倍;docker-proxy 自己用 1.1–1.25 个核,比游戏服还多。
+- bridge 本身不贵:宿主机直连容器 IP(bridge + veth,不经过 docker-proxy)p99 0.40–0.57 ms,和 bot 放在容器里(0.44–0.52 ms)几乎一样。
+- 和预期相反,在这台机器上 host 网络反而慢:WSL2 的 mirrored 模式让宿主机命名空间里 127.0.0.1 的 TCP 绕经 Windows,`--network host` 的容器 p99 约 1.0 ms(D29)。
+- 所以在容器上压测,bot 要么放进容器里(`make bench-compose`),要么直连容器 IP,不能走映射端口。
 
-**什么时候会换**:单机上追求最低延迟(压测、或者一台机器只跑一个游戏服)时用 host 网络;真实部署多半在 Kubernetes,走的是 CNI 网络,这个选择由集群决定。
+**什么时候会换**:原生 Linux 上追求最低延迟(一台机器只跑一个游戏服)时,可以用 host 网络,省掉 veth 和 NAT,但要先在那台机器上量一次;真实部署多半在 Kubernetes,走的是 CNI 网络,这个选择由集群决定。
