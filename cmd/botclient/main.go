@@ -1,7 +1,10 @@
 // botclient 是冒烟 / 压测客户端。
-// 现在的版本:单连接,(可选)先登录、快速匹配进房间,然后按间隔发 N 个 Ping,逐个等 Pong,统计 RTT 分位数。
+//
+// 单连接模式:(可选)先登录、快速匹配进房间,然后按间隔发 N 个 Ping,逐个等 Pong,统计 RTT 分位数。
 // 等 Pong 的时候收到的推送(别人进出房间、被踢)会打印出来,开两个 bot 就能看到彼此。
-// Lab 5 在此基础上加并发连接数和同步流量,产出 500 并发下的 P99。
+//
+// -watch:登录、匹配之后不测 RTT,持续打印房间快照;加 -move 自己绕圈走。
+// 开两个终端,一个 -watch -move、一个 -watch,能看到对方的坐标在变。
 //
 // 登录用的 token:给了 -token 就用它;否则用 GS_TOKEN_SECRET 给 -player 现签一个。
 // bot 是测试工具,手里有密钥可以自签,省得压测前先跑 500 次 tokengen。
@@ -9,12 +12,16 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"math"
 	"net"
 	"os"
+	"os/signal"
 	"slices"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Anthonyz5527083/game-server/internal/auth"
@@ -31,6 +38,8 @@ type options struct {
 	timeout  time.Duration
 	quiet    bool
 	match    bool
+	watch    bool
+	move     bool
 }
 
 func main() {
@@ -43,6 +52,8 @@ func main() {
 	flag.DurationVar(&o.timeout, "timeout", 3*time.Second, "连接超时,以及每次等应答的超时")
 	flag.BoolVar(&o.quiet, "q", false, "不逐条打印 Pong,只打印最后的统计")
 	flag.BoolVar(&o.match, "match", false, "登录后快速匹配进一个房间(需要 -player 或 -token)")
+	flag.BoolVar(&o.watch, "watch", false, "登录并快速匹配后持续打印快照,直到 Ctrl-C(需要 -player 或 -token)")
+	flag.BoolVar(&o.move, "move", false, "和 -watch 一起用:自己绕圈走")
 	flag.Parse()
 
 	if err := run(o); err != nil {
@@ -92,11 +103,16 @@ func run(o options) error {
 		if err := login(c, o); err != nil {
 			return err
 		}
-		if o.match {
+		if o.match || o.watch {
 			if err := quickMatch(c); err != nil {
 				return err
 			}
 		}
+	} else if o.watch {
+		return fmt.Errorf("-watch needs -player or -token")
+	}
+	if o.watch {
+		return watch(c, o.move)
 	}
 	return pingLoop(c, o)
 }
@@ -143,6 +159,75 @@ func quickMatch(c *client) error {
 	}
 	fmt.Printf("in room %d, members %v\n", resp.GetRoom().GetRoomId(), resp.GetRoom().GetMembers())
 	return nil
+}
+
+// watch 持续打印快照,直到 Ctrl-C 或连接断开。读在当前 goroutine,写在另一个 goroutine:
+// 不动的时候每 5 秒发一个 Ping 保活(不然会被 idle timeout 踢掉);-move 时每 200ms 换一次方向,
+// 走一个周期约 12.6 秒的圆。
+func watch(c *client, move bool) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	_ = c.nc.SetDeadline(time.Time{}) // 读不设超时:快照每 50ms 一个,断线时 Read 会返回错误
+	context.AfterFunc(ctx, func() { _ = c.nc.Close() })
+
+	go func() {
+		every := 5 * time.Second
+		if move {
+			every = 200 * time.Millisecond
+		}
+		t := time.NewTicker(every)
+		defer t.Stop()
+		start := time.Now()
+		var seq uint32
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				env := &pb.Envelope{Payload: &pb.Envelope_Ping{Ping: &pb.Ping{ClientTimeMs: now.UnixMilli()}}}
+				if move {
+					seq++
+					a := now.Sub(start).Seconds() * 0.5 // 0.5 rad/s
+					env = &pb.Envelope{Payload: &pb.Envelope_MoveInput{MoveInput: &pb.MoveInput{
+						Seq: seq, DirX: float32(math.Cos(a)), DirY: float32(math.Sin(a)),
+					}}}
+				}
+				_ = c.nc.SetWriteDeadline(time.Now().Add(c.timeout))
+				if err := gateway.WriteEnvelope(c.nc, env); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	for {
+		env, err := gateway.ReadEnvelope(c.r)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil // Ctrl-C
+			}
+			return fmt.Errorf("read: %w", err)
+		}
+		switch {
+		case env.GetSnapshot() != nil:
+			if snap := env.GetSnapshot(); snap.GetTick()%4 == 0 { // 每秒打 5 行,20 行太刷屏
+				fmt.Println(formatSnapshot(snap))
+			}
+		case env.GetPong() != nil:
+		default:
+			fmt.Printf("push: %v\n", env)
+		}
+	}
+}
+
+// formatSnapshot:tick=120  1:(60.0,50.0)#0  2:(55.3,57.1)#41,# 后面是 last_input_seq。
+func formatSnapshot(s *pb.Snapshot) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "tick=%-5d", s.GetTick())
+	for _, p := range s.GetPlayers() {
+		fmt.Fprintf(&b, "  %d:(%.1f,%.1f)#%d", p.GetPlayerId(), p.GetX(), p.GetY(), p.GetLastInputSeq())
+	}
+	return b.String()
 }
 
 func pingLoop(c *client, o options) error {
