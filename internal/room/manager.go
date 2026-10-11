@@ -42,7 +42,10 @@ type Config struct {
 	// TickInterval 是每个房间的 tick 间隔,20Hz 就是 50ms。
 	// 0 表示不起 tick 循环:只测成员关系和事件广播的单元测试用。
 	TickInterval time.Duration
-	Logger       *slog.Logger // nil 时用 slog.Default()
+	// RecordMatches:房间解散时生成一条对局记录(MatchRecord),由 RunRecorder 写出去。
+	// 不开的话(没有配 MySQL)什么都不记。
+	RecordMatches bool
+	Logger        *slog.Logger // nil 时用 slog.Default()
 }
 
 // Manager 管理所有房间。零值不能用,用 NewManager。
@@ -68,12 +71,18 @@ type Manager struct {
 	dirty map[uint32]struct{}
 	wake  chan struct{}
 
-	ticks sync.WaitGroup // 所有房间的 tick goroutine
+	ticks   sync.WaitGroup   // 所有房间的 tick goroutine
+	records chan MatchRecord // 等待写出的对局记录,见 record.go;没开 RecordMatches 时为 nil
 }
 
 type room struct {
 	id   uint32
 	stop chan struct{} // 房间销毁时 close,tick goroutine 看到就退出;不起 tick 时为 nil
+
+	// 对局记录用,由 Manager.mu 保护
+	created time.Time
+	players []uint64 // 这一局进过房间的所有玩家,按第一次进入的顺序
+	peak    int
 
 	mu      sync.Mutex
 	members []member  // 写:同时持有 Manager.mu 和 room.mu;读:持有任意一把
@@ -90,7 +99,7 @@ func NewManager(cfg Config) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Manager{
+	m := &Manager{
 		capacity: cfg.Capacity,
 		interval: cfg.TickInterval,
 		log:      log,
@@ -99,6 +108,10 @@ func NewManager(cfg Config) *Manager {
 		dirty:    make(map[uint32]struct{}),
 		wake:     make(chan struct{}, 1),
 	}
+	if cfg.RecordMatches {
+		m.records = make(chan MatchRecord, recordQueueLen)
+	}
+	return m
 }
 
 // Create 新建一个房间,playerID 成为第一个成员。
@@ -176,6 +189,7 @@ func (m *Manager) Leave(playerID uint64) (Info, error) {
 			close(r.stop) // tick goroutine 下一次 select 就退出;它这时如果正在等 r.mu,拿到锁后看到没有成员,什么都不发
 		}
 		m.log.Info("room closed", "room", r.id, "ticks", r.world.Tick())
+		m.recordLocked(r)
 		return info, nil
 	}
 	m.broadcastLocked(r, pb.RoomEvent_LEFT, playerID, info)
@@ -251,7 +265,7 @@ func (m *Manager) Rooms() []Info {
 
 func (m *Manager) newRoomLocked() *room {
 	m.nextID++
-	r := &room{id: m.nextID}
+	r := &room{id: m.nextID, created: time.Now()}
 	m.rooms[r.id] = r
 	if m.interval > 0 {
 		r.stop = make(chan struct{})
@@ -271,6 +285,10 @@ func (m *Manager) addLocked(r *room, playerID uint64, conn Sender) {
 	defer r.mu.Unlock()
 	r.members = append(r.members, member{playerID: playerID, conn: conn})
 	r.world.Add(playerID)
+	if !slices.Contains(r.players, playerID) {
+		r.players = append(r.players, playerID)
+	}
+	r.peak = max(r.peak, len(r.members))
 	m.broadcastLocked(r, pb.RoomEvent_JOINED, playerID, m.infoLocked(r))
 }
 
