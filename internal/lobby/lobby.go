@@ -21,6 +21,7 @@ import (
 	"github.com/Anthonyz5527083/game-server/internal/gateway"
 	"github.com/Anthonyz5527083/game-server/internal/pb"
 	"github.com/Anthonyz5527083/game-server/internal/room"
+	"github.com/Anthonyz5527083/game-server/internal/sim"
 	"github.com/Anthonyz5527083/game-server/internal/storage"
 )
 
@@ -196,10 +197,20 @@ func (l *Lobby) OnMessage(c *gateway.Conn, env *pb.Envelope) {
 	}
 }
 
-// handlePlayerLocked 处理已登录玩家的消息。调用方持有 l.mu。
-// Lab 4 的移动输入(MoveInput)也从这里分发出去。
+// handlePlayerLocked 处理已登录玩家的消息。调用方持有 l.mu,所以这里只做快操作。
 func (l *Lobby) handlePlayerLocked(cl *client, env *pb.Envelope) {
 	pid, c := cl.playerID, cl.conn
+	if p, ok := env.GetPayload().(*pb.Envelope_MoveInput); ok {
+		// 只是把输入交给房间排队,下一个 tick 才生效。MoveInput 没有应答;
+		// 不在房间里就丢掉(可能刚离开,客户端还没收到应答),不算协议错误。
+		in := p.MoveInput
+		_ = l.cfg.Rooms.Input(pid, sim.Input{
+			Seq: in.GetSeq(),
+			Dir: sim.Vec{X: float64(in.GetDirX()), Y: float64(in.GetDirY())},
+		})
+		return
+	}
+
 	var info room.Info
 	var err error
 	switch p := env.GetPayload().(type) {

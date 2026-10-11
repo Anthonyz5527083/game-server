@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+
+	"github.com/Anthonyz5527083/game-server/internal/gateway"
+	"github.com/Anthonyz5527083/game-server/internal/sim"
 )
 
 type nopSender struct{}
@@ -41,4 +44,45 @@ func BenchmarkQuickMatchLeave(b *testing.B) {
 			must(m.Leave(pid))
 		}
 	})
+}
+
+// B4.3 一次 tick 的耗时:8 人房,推进 world + 编码快照 + 投递 8 次(投递是空操作,只量服务端自己的开销)。
+func BenchmarkTick8(b *testing.B) {
+	m := newManager()
+	r := must(m.Create(1, nopSender{}))
+	for pid := uint64(2); pid <= 8; pid++ {
+		must(m.Join(r.ID, pid, nopSender{}))
+	}
+	rm := m.rooms[r.ID]
+	for pid := uint64(1); pid <= 8; pid++ {
+		_ = m.Input(pid, sim.Input{Seq: 1000 + uint32(pid), Dir: sim.Vec{X: 1, Y: 0.5}})
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		m.tick(rm, 0.05)
+	}
+}
+
+// D18 的依据:8 人全量快照编码后多大。tick 编号和 last_input_seq 取压测 30 秒左右时的量级。
+func TestSnapshotSize8(t *testing.T) {
+	m := newManager()
+	r := must(m.Create(1, nopSender{}))
+	for pid := uint64(2); pid <= 8; pid++ {
+		must(m.Join(r.ID, pid, nopSender{}))
+	}
+	rm := m.rooms[r.ID]
+	for pid := uint64(1); pid <= 8; pid++ {
+		_ = m.Input(pid, sim.Input{Seq: 700, Dir: sim.Vec{X: 1, Y: 0.5}})
+	}
+	for range 700 {
+		rm.world.Advance(0.05)
+	}
+	frame, err := gateway.Marshal(snapshotEnvelope(rm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("8-player snapshot frame: %d bytes (body %d)", len(frame), len(frame)-4)
+	if len(frame) > 256 {
+		t.Fatalf("snapshot frame %d bytes, want <= 256", len(frame))
+	}
 }

@@ -22,8 +22,10 @@ import (
 	"github.com/Anthonyz5527083/game-server/internal/storage"
 )
 
-// roomCapacity 是房间人数上限(scope:2–8 人)。
-const roomCapacity = 8
+const (
+	roomCapacity = 8                     // 房间人数上限(scope:2–8 人)
+	tickInterval = 50 * time.Millisecond // 20Hz
+)
 
 func main() {
 	addr := flag.String("addr", ":7777", "TCP 监听地址")
@@ -62,7 +64,8 @@ func run(logger *slog.Logger, addr, redisAddr string, idle, loginTimeout, sessio
 	}
 	cancel()
 
-	rooms := room.NewManager(roomCapacity, logger)
+	rooms := room.NewManager(room.Config{Capacity: roomCapacity, TickInterval: tickInterval, Logger: logger})
+	defer rooms.Close()
 	lb := lobby.New(lobby.Config{
 		Signer:       signer,
 		Sessions:     storage.NewSessions(rdb, sessionTTL),

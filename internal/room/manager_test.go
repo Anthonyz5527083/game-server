@@ -19,7 +19,7 @@ import (
 )
 
 func newManager() *Manager {
-	return NewManager(8, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return NewManager(Config{Capacity: 8, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 }
 
 // fakeConn 把收到的帧解码成 RoomEvent 存起来;fail 为 true 时模拟「队列满、连接已断」。

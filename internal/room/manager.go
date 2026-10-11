@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/Anthonyz5527083/game-server/internal/gateway"
 	"github.com/Anthonyz5527083/game-server/internal/pb"
+	"github.com/Anthonyz5527083/game-server/internal/sim"
 )
 
 var (
@@ -33,9 +35,27 @@ type Info struct {
 	Members  []uint64 // 玩家 ID,按加入顺序
 }
 
+// Config 配置 Manager。
+type Config struct {
+	Capacity int // 房间人数上限
+	// TickInterval 是每个房间的 tick 间隔,20Hz 就是 50ms。
+	// 0 表示不起 tick 循环:只测成员关系和事件广播的单元测试用。
+	TickInterval time.Duration
+	Logger       *slog.Logger // nil 时用 slog.Default()
+}
+
 // Manager 管理所有房间。零值不能用,用 NewManager。
+//
+// 两层锁(D12 的「什么时候会换」在 Lab 4 兑现了):
+//   - Manager.mu 管成员关系:房间表、玩家 → 房间索引、每个房间的成员列表;
+//   - room.mu 管一个房间的游戏状态(world)。tick 循环只拿自己房间的这把锁,不碰全局锁,
+//     63 个房间的 tick 互不排队,进出房间也不会被某个房间的 tick 卡住。
+//
+// 锁顺序:Manager.mu → room.mu → 网关。room.members 的写要同时持有两把锁,读持有任意一把就够:
+// 进出房间(持 Manager.mu)和 tick(持 room.mu)都能安全地读成员列表。
 type Manager struct {
 	capacity int
+	interval time.Duration
 	log      *slog.Logger
 
 	mu     sync.Mutex
@@ -46,11 +66,17 @@ type Manager struct {
 	// 镜像同步(见 mirror.go):有变化的房间号记在 dirty 里,再往 wake 里丢一个信号。
 	dirty map[uint32]struct{}
 	wake  chan struct{}
+
+	ticks sync.WaitGroup // 所有房间的 tick goroutine
 }
 
 type room struct {
-	id      uint32
-	members []member
+	id   uint32
+	stop chan struct{} // 房间销毁时 close,tick goroutine 看到就退出;不起 tick 时为 nil
+
+	mu      sync.Mutex
+	members []member  // 写:同时持有 Manager.mu 和 room.mu;读:持有任意一把
+	world   sim.World // 由 room.mu 保护
 }
 
 type member struct {
@@ -58,12 +84,14 @@ type member struct {
 	conn     Sender
 }
 
-func NewManager(capacity int, log *slog.Logger) *Manager {
+func NewManager(cfg Config) *Manager {
+	log := cfg.Logger
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Manager{
-		capacity: capacity,
+		capacity: cfg.Capacity,
+		interval: cfg.TickInterval,
 		log:      log,
 		rooms:    make(map[uint32]*room),
 		where:    make(map[uint64]*room),
@@ -134,16 +162,65 @@ func (m *Manager) Leave(playerID uint64) (Info, error) {
 		return Info{}, ErrNotInRoom
 	}
 	delete(m.where, playerID)
-	r.members = slices.DeleteFunc(r.members, func(mb member) bool { return mb.playerID == playerID })
 	m.markDirtyLocked(r.id)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.members = slices.DeleteFunc(r.members, func(mb member) bool { return mb.playerID == playerID })
+	r.world.Remove(playerID)
 	info := m.infoLocked(r)
 	if len(r.members) == 0 {
 		delete(m.rooms, r.id)
-		m.log.Info("room closed", "room", r.id)
+		if r.stop != nil {
+			close(r.stop) // tick goroutine 下一次 select 就退出;它这时如果正在等 r.mu,拿到锁后看到没有成员,什么都不发
+		}
+		m.log.Info("room closed", "room", r.id, "ticks", r.world.Tick())
 		return info, nil
 	}
 	m.broadcastLocked(r, pb.RoomEvent_LEFT, playerID, info)
 	return info, nil
+}
+
+// Input 把玩家的移动输入交给他所在房间,下一个 tick 生效。玩家不在房间里返回 ErrNotInRoom。
+//
+// 全局锁只用来查「玩家在哪个房间」,放掉之后才去拿房间锁:房间锁可能正被 tick 持有,
+// 持着全局锁等它,会让所有房间的进出和输入都排在这一个房间的 tick 后面。
+// 放锁的空档里玩家如果离开了房间,SetInput 在 world 里找不到他,这条输入就作废,不会写错房间。
+func (m *Manager) Input(playerID uint64, in sim.Input) error {
+	m.mu.Lock()
+	r, ok := m.where[playerID]
+	m.mu.Unlock()
+	if !ok {
+		return ErrNotInRoom
+	}
+	r.mu.Lock()
+	ok = r.world.SetInput(playerID, in)
+	r.mu.Unlock()
+	if !ok {
+		return ErrNotInRoom
+	}
+	return nil
+}
+
+// Count 返回当前房间数。给 metrics 用,不像 Rooms 那样拷贝成员列表。
+func (m *Manager) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.rooms)
+}
+
+// Close 停掉所有还没销毁的房间的 tick,并等这些 goroutine 退出。之后不能再用这个 Manager。
+// 正常关停时房间早就随着最后一个人断线销毁了,这里只是兜底,保证进程退出前没有 tick 还在发。
+func (m *Manager) Close() {
+	m.mu.Lock()
+	for id, r := range m.rooms {
+		if r.stop != nil {
+			close(r.stop)
+		}
+		delete(m.rooms, id)
+	}
+	m.mu.Unlock()
+	m.ticks.Wait()
 }
 
 // RoomOf 返回玩家所在的房间号。
@@ -169,20 +246,30 @@ func (m *Manager) Rooms() []Info {
 	return out
 }
 
-// ---------- 以下方法名带 Locked 后缀:调用方必须已经持有 m.mu ----------
+// ---------- 以下方法名带 Locked 后缀:调用方必须已经持有 m.mu(broadcastLocked 还要持有 r.mu) ----------
 
 func (m *Manager) newRoomLocked() *room {
 	m.nextID++
 	r := &room{id: m.nextID}
 	m.rooms[r.id] = r
+	if m.interval > 0 {
+		r.stop = make(chan struct{})
+		m.ticks.Add(1)
+		go m.runTicks(r)
+	}
 	m.log.Info("room created", "room", r.id)
 	return r
 }
 
+// addLocked 把玩家加进房间。成员列表、world 和 JOINED 事件在同一段 room.mu 里完成:
+// 房间里的人一定先收到「X 进来了」,再收到带着 X 的快照。
 func (m *Manager) addLocked(r *room, playerID uint64, conn Sender) {
-	r.members = append(r.members, member{playerID: playerID, conn: conn})
 	m.where[playerID] = r
 	m.markDirtyLocked(r.id)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.members = append(r.members, member{playerID: playerID, conn: conn})
+	r.world.Add(playerID)
 	m.broadcastLocked(r, pb.RoomEvent_JOINED, playerID, m.infoLocked(r))
 }
 
@@ -194,7 +281,7 @@ func (m *Manager) infoLocked(r *room) Info {
 	return Info{ID: r.id, Capacity: m.capacity, Members: ids}
 }
 
-// broadcastLocked 把一个事件发给房间里除 actor 以外的所有人。
+// broadcastLocked 把一个事件发给房间里除 actor 以外的所有人。调用方持有 m.mu 和 r.mu。
 //
 // 编码一次,所有人共享同一个 []byte(D14)。持锁发送:SendFrame 不阻塞,
 // 持锁的代价是几微秒;换来的是事件顺序和房间状态的变化顺序一致。

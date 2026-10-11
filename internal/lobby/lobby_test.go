@@ -21,6 +21,7 @@ import (
 	"github.com/Anthonyz5527083/game-server/internal/gateway"
 	"github.com/Anthonyz5527083/game-server/internal/pb"
 	"github.com/Anthonyz5527083/game-server/internal/room"
+	"github.com/Anthonyz5527083/game-server/internal/sim"
 	"github.com/Anthonyz5527083/game-server/internal/storage"
 )
 
@@ -59,7 +60,8 @@ func newEnv(t *testing.T, mutate func(*Config)) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rooms := room.NewManager(8, nil)
+	rooms := room.NewManager(room.Config{Capacity: 8, TickInterval: 50 * time.Millisecond})
+	t.Cleanup(rooms.Close)
 	cfg := Config{
 		Signer:       signer,
 		Sessions:     storage.NewSessions(rdb, time.Minute),
@@ -500,14 +502,19 @@ func leaveRoom() *pb.Envelope {
 	return &pb.Envelope{Payload: &pb.Envelope_LeaveRoomReq{LeaveRoomReq: &pb.LeaveRoomReq{}}}
 }
 
-// recvEvent 读下一个 RoomEvent。
+// recvEvent 读下一个 RoomEvent,跳过中间的快照(进了房间之后每 50ms 就有一个)。
 func (c *testClient) recvEvent() *pb.RoomEvent {
 	c.t.Helper()
-	env := c.recv()
-	if env.GetRoomEvent() == nil {
-		c.t.Fatalf("want RoomEvent, got %v", env)
+	for {
+		env := c.recv()
+		if env.GetSnapshot() != nil {
+			continue
+		}
+		if env.GetRoomEvent() == nil {
+			c.t.Fatalf("want RoomEvent, got %v", env)
+		}
+		return env.GetRoomEvent()
 	}
-	return env.GetRoomEvent()
 }
 
 func (e *testEnv) loggedIn(pid uint64) *testClient {
@@ -651,5 +658,130 @@ func TestReplacedPlayerLeavesRoom(t *testing.T) {
 	}
 	if code := fresh.roomReq(quickMatch()).GetCode(); code != pb.Code_OK {
 		t.Fatalf("fresh quick match: %v", code)
+	}
+}
+
+// ---------- T4.x:同步(经过真的网关和大厅) ----------
+
+func move(seq uint32, x, y float32) *pb.Envelope {
+	return &pb.Envelope{Payload: &pb.Envelope_MoveInput{MoveInput: &pb.MoveInput{Seq: seq, DirX: x, DirY: y}}}
+}
+
+// recvSnapshot 读下一个快照,跳过其它推送。
+func (c *testClient) recvSnapshot() *pb.Snapshot {
+	c.t.Helper()
+	for {
+		if snap := c.recv().GetSnapshot(); snap != nil {
+			return snap
+		}
+	}
+}
+
+func playerIn(snap *pb.Snapshot, pid uint64) *pb.PlayerState {
+	for _, p := range snap.GetPlayers() {
+		if p.GetPlayerId() == pid {
+			return p
+		}
+	}
+	return nil
+}
+
+// T4.5 互相看见:A 向右走 1 秒,B 收到的 A.x 单调不减,
+// 总位移等于 移速 × 实际走的时间,误差在一个 tick 的位移以内。
+func TestPlayersSeeEachOther(t *testing.T) {
+	e := newEnv(t, nil)
+	a, b := e.loggedIn(1), e.loggedIn(2)
+	id := a.roomReq(createRoom()).GetRoom().GetRoomId()
+	b.roomReq(joinRoom(id))
+	_ = b.nc.SetReadDeadline(time.Now().Add(5 * time.Second))
+	x0 := playerIn(b.recvSnapshot(), 1).GetX() // A 还没动时的位置
+
+	// B 收集快照,直到看到 A 的 last_input_seq 变成 2(停下的那条输入被应用了)。
+	type sample struct {
+		x   float32
+		seq uint32
+	}
+	samples := make(chan []sample, 1)
+	go func() {
+		var got []sample
+		for {
+			env, err := gateway.ReadEnvelope(b.r)
+			if err != nil {
+				samples <- got
+				return
+			}
+			if p := playerIn(env.GetSnapshot(), 1); p != nil {
+				got = append(got, sample{p.GetX(), p.GetLastInputSeq()})
+				if p.GetLastInputSeq() == 2 {
+					samples <- got
+					return
+				}
+			}
+		}
+	}()
+
+	start := time.Now()
+	a.send(move(1, 1, 0))
+	time.Sleep(time.Second)
+	a.send(move(2, 0, 0))
+	walked := time.Since(start) // Sleep 可能多睡,按实际时间算期望位移
+	got := <-samples
+
+	if len(got) == 0 || got[len(got)-1].seq != 2 {
+		t.Fatalf("B never saw A stop; %d samples", len(got))
+	}
+	for i, s := range got {
+		if i > 0 && s.x < got[i-1].x {
+			t.Fatalf("A.x went backwards: %v -> %v", got[i-1].x, s.x)
+		}
+	}
+	disp := float64(got[len(got)-1].x - x0)
+	want := sim.Speed * walked.Seconds()
+	perTick := sim.Speed * 0.05
+	if disp < want-perTick-1e-3 || disp > want+perTick+1e-3 {
+		t.Fatalf("A moved %.3f in %v, want %.3f ± %.3f", disp, walked, want, perTick)
+	}
+}
+
+// T4.6 输入洪水:A 一口气发 1000 个 MoveInput,B 的快照间隔不受影响,tick 编号连续。
+func TestInputFloodOverNetwork(t *testing.T) {
+	e := newEnv(t, nil)
+	a, b := e.loggedIn(1), e.loggedIn(2)
+	id := a.roomReq(createRoom()).GetRoom().GetRoomId()
+	b.roomReq(joinRoom(id))
+	b.recvSnapshot()
+
+	// 1000 帧拼成一次 Write,服务端一个 tick 之内全部收到
+	var buf []byte
+	for seq := uint32(1); seq <= 1000; seq++ {
+		frame, err := gateway.Marshal(move(seq, 100, 100))
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf = append(buf, frame...)
+	}
+	if _, err := a.nc.Write(buf); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := b.recvSnapshot()
+	prevAt := time.Now()
+	sawLast := false
+	for range 20 {
+		snap := b.recvSnapshot()
+		now := time.Now()
+		if snap.GetTick() != prev.GetTick()+1 {
+			t.Fatalf("tick %d followed by %d", prev.GetTick(), snap.GetTick())
+		}
+		if gap := now.Sub(prevAt); gap > 100*time.Millisecond {
+			t.Errorf("snapshot gap %v during flood", gap)
+		}
+		if p := playerIn(snap, 1); p.GetLastInputSeq() == 1000 {
+			sawLast = true
+		}
+		prev, prevAt = snap, now
+	}
+	if !sawLast {
+		t.Fatal("last input (seq 1000) never applied")
 	}
 }
