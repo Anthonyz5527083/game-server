@@ -8,7 +8,7 @@ export GS_TOKEN_SECRET
 
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
-.PHONY: all build run bot watch bench redis up down down-v logs test test-mysql vet fmt proto tidy clean
+.PHONY: all build run bot watch bench bench-compose redis up down down-v logs test test-mysql vet fmt proto tidy clean
 
 all: build
 
@@ -34,6 +34,11 @@ watch: build
 ## bench: 500 连接压测(预热 5 秒 + 测量 30 秒),负载模型见 docs/BENCHMARK.md
 bench: build
 	./$(BIN)/botclient -c 500 -d 30s -warmup 5s
+
+## bench-compose: 同样的压测,bot 跑在 make up 起的 gameserver 容器里,走容器内 loopback。
+## 不经过 docker-proxy,也不受 WSL mirrored 网络模式下 127.0.0.1 绕经 Windows 的影响(D29)
+bench-compose:
+	$(COMPOSE) exec gameserver botclient -c 500 -d 30s -warmup 5s
 
 ## redis: 只起 Redis(本地 go run 服务端时用)
 redis:
