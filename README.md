@@ -1,5 +1,7 @@
 # game-server
 
+中文 · [English](README.en.md)
+
 一个 2–8 人实时同步小游戏的服务端,用 Go 写。TCP 长连接 + Protobuf;登录校验、会话落 Redis;房间、快速匹配和房间内广播;每个房间 20Hz 的服务端权威状态同步;账号和战绩存 MySQL;Prometheus 指标 + pprof;自写的压测客户端在 500 并发下给出 P99。
 
 ## 压测数字
