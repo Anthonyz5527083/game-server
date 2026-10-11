@@ -30,7 +30,7 @@ func TestIssueVerify(t *testing.T) {
 	}
 }
 
-// T2.2 改掉任何一个字符都必须被拒,不管改的是内容还是签名。
+// 改掉任何一个字符都必须被拒,不管改的是内容还是签名。
 func TestVerifyRejectsEveryTamperedByte(t *testing.T) {
 	s := mustSigner(t, secret)
 	tok, err := s.Issue(42, time.Now().Add(time.Hour))
@@ -50,7 +50,7 @@ func TestVerifyRejectsEveryTamperedByte(t *testing.T) {
 	}
 }
 
-// T2.3 过期的 token 返回 ErrExpired,和「签名错」能区分开。
+// 过期的 token 返回 ErrExpired,和「签名错」能区分开。
 func TestVerifyExpired(t *testing.T) {
 	s := mustSigner(t, secret)
 	tok, err := s.Issue(42, time.Now().Add(-time.Second))

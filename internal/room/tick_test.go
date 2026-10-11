@@ -56,8 +56,8 @@ func (s *snapConn) count() int {
 	return len(s.snaps)
 }
 
-// T4.3 + T4.4 频率和 tick 编号:3 秒内收到 60 ± 2 个快照,相邻快照的 tick 严格差 1。
-// 手册写的是 10 秒 200 ± 2;缩短到 3 秒是为了 make test 不变慢,±2 在 3 秒里是更严的 3%。
+// 频率和 tick 编号:3 秒内收到 60 ± 2 个快照,相邻快照的 tick 严格差 1。
+// 只测 3 秒是为了 make test 不变慢;长时间的频率由压测的快照到达率来验(docs/BENCHMARK.md)。
 func TestTickRateAndNumbering(t *testing.T) {
 	t.Parallel()
 	m := newTickManager(t)
@@ -128,7 +128,7 @@ func TestInputMovesPlayer(t *testing.T) {
 	}
 }
 
-// T4.6(房间层)一个 tick 内灌 1000 个输入:tick 不变慢,快照间隔和平时一样,位移不超过一个 tick 的量。
+// 一个 tick 内灌 1000 个输入:tick 不变慢,快照间隔和平时一样,位移不超过一个 tick 的量。
 func TestInputFloodDoesNotSlowTick(t *testing.T) {
 	t.Parallel()
 	m := newTickManager(t)
@@ -167,7 +167,7 @@ func TestInputFloodDoesNotSlowTick(t *testing.T) {
 	}
 }
 
-// T4.7 建 100 个房间再全部解散,goroutine 数回到基线:每个房间的 tick goroutine 都退出了。
+// 建 100 个房间再全部解散,goroutine 数回到基线:每个房间的 tick goroutine 都退出了。
 func TestNoTickGoroutineLeak(t *testing.T) {
 	m := newTickManager(t)
 	base := runtime.NumGoroutine()

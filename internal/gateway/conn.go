@@ -229,8 +229,8 @@ func (c *Conn) writeLoop() {
 			if c.srv.WriteTimeout > 0 {
 				_ = c.nc.SetWriteDeadline(time.Now().Add(c.srv.WriteTimeout))
 			}
-			// 一帧一次 Write。Lab 4 广播 20Hz 时,如果 write 系统调用成了瓶颈,
-			// 可以在这里把队列里积压的多帧合并成一次 Write,再压测对比。
+			// 一帧一次 Write。压测里 write 系统调用占服务端 CPU 的 8%(docs/BENCHMARK.md 火焰图),
+			// 连接数再往上加时,可以在这里把队列里积压的多帧合并成一次 writev,再压测对比。
 			if _, err := c.nc.Write(f.data); err != nil {
 				c.closeWith(ReasonIOError, err)
 				return

@@ -89,7 +89,7 @@ func (r *closeRecorder) only(t *testing.T) string {
 	return got
 }
 
-// T1.4 Ping → Pong:seq 对得上,客户端时间原样带回。
+// Ping → Pong:seq 对得上,客户端时间原样带回。
 func TestPingPong(t *testing.T) {
 	addr := startServer(t, &Server{})
 	nc, r := dial(t, addr)
@@ -110,7 +110,7 @@ func TestPingPong(t *testing.T) {
 	}
 }
 
-// T1.5 粘包:三帧一次 Write 发出去,服务端要逐帧切开、逐帧应答。
+// 粘包:三帧一次 Write 发出去,服务端要逐帧切开、逐帧应答。
 func TestCoalescedFrames(t *testing.T) {
 	addr := startServer(t, &Server{})
 	nc, r := dial(t, addr)
@@ -137,7 +137,7 @@ func TestCoalescedFrames(t *testing.T) {
 	}
 }
 
-// T1.6 半包:一帧拆两次写,拆分点在长度头中间,中间停一下。服务端要能拼回来。
+// 半包:一帧拆两次写,拆分点在长度头中间,中间停一下。服务端要能拼回来。
 func TestSplitFrame(t *testing.T) {
 	addr := startServer(t, &Server{})
 	nc, r := dial(t, addr)
@@ -163,7 +163,7 @@ func TestSplitFrame(t *testing.T) {
 	}
 }
 
-// T1.7 idle 踢人:什么都不发,客户端在 timeout 附近读到 EOF,原因是 idle timeout。
+// idle 踢人:什么都不发,客户端在 timeout 附近读到 EOF,原因是 idle timeout。
 func TestIdleTimeout(t *testing.T) {
 	var rec closeRecorder
 	const idle = 150 * time.Millisecond
@@ -200,7 +200,7 @@ func TestPingKeepsConnAlive(t *testing.T) {
 	}
 }
 
-// T1.8 坏连接不连坐:A 发恶意长度头被断开,B 照常 ping/pong。
+// 坏连接不连坐:A 发恶意长度头被断开,B 照常 ping/pong。
 func TestBadFrameClosesOnlyThatConn(t *testing.T) {
 	var rec closeRecorder
 	addr := startServer(t, &Server{Handler: rec.handler()})
@@ -225,7 +225,7 @@ func TestBadFrameClosesOnlyThatConn(t *testing.T) {
 	}
 }
 
-// T1.9 并发 200 连接 ping/pong;全部关掉后 Count() 回到 0。
+// 并发 200 连接 ping/pong;全部关掉后 Count() 回到 0。
 func TestConcurrentClients(t *testing.T) {
 	s := &Server{}
 	addr := startServer(t, s)
@@ -274,7 +274,7 @@ func pingN(addr string, id uint32, n int) error {
 	return nil
 }
 
-// T1.10 优雅关停:ctx 取消后 Serve 返回,所有连接被关,每条连接都收到 OnClose(server shutdown),
+// 优雅关停:ctx 取消后 Serve 返回,所有连接被关,每条连接都收到 OnClose(server shutdown),
 // goroutine 数回到测试前的水平。
 func TestShutdown(t *testing.T) {
 	before := runtime.NumGoroutine()

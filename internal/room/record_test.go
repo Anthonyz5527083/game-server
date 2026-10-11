@@ -51,7 +51,7 @@ func newRecordingManager(t *testing.T, sink RecordSink) (*Manager, context.Cance
 	return m, cancel, done
 }
 
-// T4.8(房间层)房间解散时写一条记录,每个字段都对:进过房间的人都在、按第一次进入的顺序,
+// 房间解散时写一条记录,每个字段都对:进过房间的人都在、按第一次进入的顺序,
 // 中途离开又回来的不重复;峰值人数;tick 数和时长对得上。
 func TestMatchRecordOnRoomClose(t *testing.T) {
 	sink := &memSink{}

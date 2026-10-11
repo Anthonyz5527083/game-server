@@ -241,7 +241,7 @@ func (c *testClient) ping() {
 
 // ---------- T2.x ----------
 
-// T2.1 合法 token:LoginResp OK,Redis 里有会话且带 TTL。
+// 合法 token:LoginResp OK,Redis 里有会话且带 TTL。
 func TestLoginOK(t *testing.T) {
 	e := newEnv(t, nil)
 	c := e.dial()
@@ -258,7 +258,7 @@ func TestLoginOK(t *testing.T) {
 	}
 }
 
-// T2.2 token 被改了一个字符:回 BAD_TOKEN 并断开。
+// token 被改了一个字符:回 BAD_TOKEN 并断开。
 func TestLoginTamperedToken(t *testing.T) {
 	e := newEnv(t, nil)
 	tok := e.token(7)
@@ -275,7 +275,7 @@ func TestLoginTamperedToken(t *testing.T) {
 	}
 }
 
-// T2.3 过期 token:回 TOKEN_EXPIRED(和签名错区分开)并断开。
+// 过期 token:回 TOKEN_EXPIRED(和签名错区分开)并断开。
 func TestLoginExpiredToken(t *testing.T) {
 	e := newEnv(t, nil)
 	tok, err := e.signer.Issue(7, time.Now().Add(-time.Minute))
@@ -289,7 +289,7 @@ func TestLoginExpiredToken(t *testing.T) {
 	c.expectEOF()
 }
 
-// T2.4 没登录就发业务消息:断开,原因是 protocol error。
+// 没登录就发业务消息:断开,原因是 protocol error。
 func TestMessageBeforeLogin(t *testing.T) {
 	e := newEnv(t, nil)
 	c := e.dial()
@@ -299,7 +299,7 @@ func TestMessageBeforeLogin(t *testing.T) {
 	e.closes.waitFor(t, gateway.ReasonProtocolError)
 }
 
-// T2.5 连上不登录:到 login timeout 收到 Kick,然后断开。Ping 不算登录。
+// 连上不登录:到 login timeout 收到 Kick,然后断开。Ping 不算登录。
 func TestLoginTimeout(t *testing.T) {
 	e := newEnv(t, func(c *Config) { c.LoginTimeout = 150 * time.Millisecond })
 	c := e.dial()
@@ -327,7 +327,7 @@ func TestLoginStopsTimer(t *testing.T) {
 	c.ping()
 }
 
-// T2.6 顶号:同一账号在第二条连接上登录,第一条收到 Kick(replaced) 后断开,
+// 顶号:同一账号在第二条连接上登录,第一条收到 Kick(replaced) 后断开,
 // 而且它断开时不能把新连接的会话删掉。
 func TestDuplicateLoginReplacesOld(t *testing.T) {
 	e := newEnv(t, nil)
@@ -354,7 +354,7 @@ func TestDuplicateLoginReplacesOld(t *testing.T) {
 	b.ping() // 新连接不受影响
 }
 
-// T2.7 断线:会话立刻从 Redis 删掉。
+// 断线:会话立刻从 Redis 删掉。
 func TestDisconnectDeletesSession(t *testing.T) {
 	e := newEnv(t, nil)
 	c := e.dial()
@@ -368,7 +368,7 @@ func TestDisconnectDeletesSession(t *testing.T) {
 	}
 }
 
-// T2.8 Redis 挂了:登录回 UNAVAILABLE,连接和进程都还活着;Redis 回来后不用重启就能登录。
+// Redis 挂了:登录回 UNAVAILABLE,连接和进程都还活着;Redis 回来后不用重启就能登录。
 func TestLoginWhileRedisDown(t *testing.T) {
 	e := newEnv(t, nil)
 	e.mr.Close()
@@ -561,7 +561,7 @@ func sameSet(a, b []uint64) bool {
 	return true
 }
 
-// T3.1 A 建房,B 加入:B 的应答里有 [A B],A 收到「B joined」;Redis 镜像跟上。
+// A 建房,B 加入:B 的应答里有 [A B],A 收到「B joined」;Redis 镜像跟上。
 func TestRoomCreateAndJoin(t *testing.T) {
 	e := newEnv(t, nil)
 	a, b := e.loggedIn(1), e.loggedIn(2)
@@ -583,7 +583,7 @@ func TestRoomCreateAndJoin(t *testing.T) {
 	e.waitMirror(map[uint32][]uint64{id: {1, 2}})
 }
 
-// T3.2 / T3.3 的错误码能传回客户端。
+// 满员、已经在房间里这些错误码能传回客户端。
 func TestRoomErrorCodes(t *testing.T) {
 	e := newEnv(t, nil)
 	a := e.loggedIn(1)
@@ -616,7 +616,7 @@ func TestRoomRequiresLogin(t *testing.T) {
 	e.closes.waitFor(t, gateway.ReasonProtocolError)
 }
 
-// T3.4 B 断线:A 在 1 秒内收到「B left」;最后一个人离开,房间销毁,Redis 里的 key 也没了。
+// B 断线:A 在 1 秒内收到「B left」;最后一个人离开,房间销毁,Redis 里的 key 也没了。
 func TestDisconnectLeavesRoom(t *testing.T) {
 	e := newEnv(t, nil)
 	a, b := e.loggedIn(1), e.loggedIn(2)
@@ -686,7 +686,7 @@ func playerIn(snap *pb.Snapshot, pid uint64) *pb.PlayerState {
 	return nil
 }
 
-// T4.5 互相看见:A 向右走 1 秒,B 收到的 A.x 单调不减,
+// 互相看见:A 向右走 1 秒,B 收到的 A.x 单调不减,
 // 总位移等于 移速 × 实际走的时间,误差在一个 tick 的位移以内。
 func TestPlayersSeeEachOther(t *testing.T) {
 	e := newEnv(t, nil)
@@ -743,7 +743,7 @@ func TestPlayersSeeEachOther(t *testing.T) {
 	}
 }
 
-// T4.6 输入洪水:A 一口气发 1000 个 MoveInput,B 的快照间隔不受影响,tick 编号连续。
+// 输入洪水:A 一口气发 1000 个 MoveInput,B 的快照间隔不受影响,tick 编号连续。
 func TestInputFloodOverNetwork(t *testing.T) {
 	e := newEnv(t, nil)
 	a, b := e.loggedIn(1), e.loggedIn(2)
@@ -809,7 +809,7 @@ func (f *fakeAccounts) setErr(err error) {
 	f.mu.Unlock()
 }
 
-// T2.9 token 签名合法,但账号表里没有这个玩家:回 NO_ACCOUNT 并断开;有的照常登录。
+// token 签名合法,但账号表里没有这个玩家:回 NO_ACCOUNT 并断开;有的照常登录。
 func TestLoginUnknownAccount(t *testing.T) {
 	e := newEnv(t, func(c *Config) { c.Accounts = &fakeAccounts{ids: map[uint64]bool{1: true}} })
 	if code := e.dial().login(e.token(1)).GetCode(); code != pb.Code_OK {

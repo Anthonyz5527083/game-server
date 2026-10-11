@@ -11,7 +11,7 @@ func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 func nearVec(a, b Vec) bool { return near(a.X, b.X) && near(a.Y, b.Y) }
 
-// T4.1 Step 是纯函数:给定位置、方向和 dt,位置是确定的。
+// Step 是纯函数:给定位置、方向和 dt,位置是确定的。
 func TestStep(t *testing.T) {
 	d := Speed * dt // 一个 tick 走的距离:0.25
 	diag := 1 / math.Sqrt2
@@ -39,7 +39,7 @@ func TestStep(t *testing.T) {
 	}
 }
 
-// T4.2 方向 (100, 100) 和 (1, 1) 走出同样的距离,都等于 Speed × dt。
+// 方向 (100, 100) 和 (1, 1) 走出同样的距离,都等于 Speed × dt。
 func TestClampDirSameDistance(t *testing.T) {
 	start := Vec{50, 50}
 	for _, raw := range []Vec{{100, 100}, {1, 1}, {3, 4}, {0, -7}} {

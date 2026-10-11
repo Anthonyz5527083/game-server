@@ -57,7 +57,7 @@ func must(info Info, err error) Info {
 	return info
 }
 
-// T3.1 A 建房,B 加入:A 收到「B joined」,B 自己不收事件(他从返回值里知道结果)。
+// A 建房,B 加入:A 收到「B joined」,B 自己不收事件(他从返回值里知道结果)。
 func TestJoinBroadcastsToOthers(t *testing.T) {
 	m := newManager()
 	a, b := &fakeConn{}, &fakeConn{}
@@ -79,7 +79,7 @@ func TestJoinBroadcastsToOthers(t *testing.T) {
 	}
 }
 
-// T3.2 第 9 个人加入被拒绝。
+// 第 9 个人加入被拒绝。
 func TestRoomFull(t *testing.T) {
 	m := newManager()
 	room := must(m.Create(1, &fakeConn{}))
@@ -91,7 +91,7 @@ func TestRoomFull(t *testing.T) {
 	}
 }
 
-// T3.3 已经在房间里的人不能再建房 / 加入 / 快速匹配。
+// 已经在房间里的人不能再建房 / 加入 / 快速匹配。
 func TestOneRoomPerPlayer(t *testing.T) {
 	m := newManager()
 	room := must(m.Create(1, &fakeConn{}))
@@ -116,7 +116,7 @@ func TestJoinMissingRoom(t *testing.T) {
 	}
 }
 
-// T3.4(房间层):离开时剩下的人收到 LEFT;最后一个人走了,房间销毁。
+// 离开时剩下的人收到 LEFT;最后一个人走了,房间销毁。
 func TestLeaveBroadcastsAndDestroys(t *testing.T) {
 	m := newManager()
 	a, b := &fakeConn{}, &fakeConn{}
@@ -144,7 +144,7 @@ func TestLeaveBroadcastsAndDestroys(t *testing.T) {
 	}
 }
 
-// T3.5 抢位:房间里 1 人、空 7 个位,64 个 goroutine 同时 Join,恰好 7 个成功。
+// 抢位:房间里 1 人、空 7 个位,64 个 goroutine 同时 Join,恰好 7 个成功。
 // 循环 20 轮,配合 -race 跑。
 func TestConcurrentJoinExactlyFillsRoom(t *testing.T) {
 	for round := range 20 {
@@ -180,7 +180,7 @@ func TestConcurrentJoinExactlyFillsRoom(t *testing.T) {
 	}
 }
 
-// T3.6 快速匹配:20 个人依次进来,房间人数是 8 / 8 / 4。
+// 快速匹配:20 个人依次进来,房间人数是 8 / 8 / 4。
 func TestQuickMatchFillsLowestRoomFirst(t *testing.T) {
 	m := newManager()
 	for pid := uint64(1); pid <= 20; pid++ {
@@ -201,7 +201,7 @@ func TestQuickMatchFillsLowestRoomFirst(t *testing.T) {
 	}
 }
 
-// T3.7 慢客户端隔离:一个成员发不出去(队列满),其他人照常收到广播,调用方也不受影响。
+// 慢客户端隔离:一个成员发不出去(队列满),其他人照常收到广播,调用方也不受影响。
 func TestBroadcastSkipsFailingMember(t *testing.T) {
 	m := newManager()
 	slow := &fakeConn{fail: true}
@@ -316,7 +316,7 @@ func startMirror(t *testing.T, m *Manager, mm *memMirror) {
 	t.Cleanup(func() { cancel(); <-done })
 }
 
-// T3.8 随机进出 1000 次之后,镜像和内存完全一致;启动时清掉上一个进程留下的房间。
+// 随机进出 1000 次之后,镜像和内存完全一致;启动时清掉上一个进程留下的房间。
 func TestMirrorConverges(t *testing.T) {
 	m := newManager()
 	mm := &memMirror{rooms: map[uint32][]uint64{99: {7, 8}}} // 上一个进程的残留

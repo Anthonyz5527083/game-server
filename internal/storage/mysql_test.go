@@ -61,7 +61,7 @@ func splitSQL(script string) []string {
 	return stmts
 }
 
-// T2.9 的存储层:种子账号查得到,不存在的查不到。
+// 种子账号查得到,不存在的查不到。
 func TestAccountsExists(t *testing.T) {
 	db := openTestMySQL(t)
 	a := NewAccounts(db)
@@ -74,7 +74,7 @@ func TestAccountsExists(t *testing.T) {
 	}
 }
 
-// T4.8 的存储层:写进去的每个字段读出来都一样(时间精确到毫秒);重复写是幂等的。
+// 写进去的每个字段读出来都一样(时间精确到毫秒);重复写是幂等的。
 func TestInsertMatch(t *testing.T) {
 	db := openTestMySQL(t)
 	start := time.Date(2026, 10, 11, 12, 0, 0, 123_000_000, time.UTC)

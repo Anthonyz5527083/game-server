@@ -18,7 +18,7 @@ func ping(seq uint32, ts int64) *pb.Envelope {
 	return &pb.Envelope{Seq: seq, Payload: &pb.Envelope_Ping{Ping: &pb.Ping{ClientTimeMs: ts}}}
 }
 
-// T1.1 编码后再解码,字段完全一致。
+// 编码后再解码,字段完全一致。
 func TestCodecRoundTrip(t *testing.T) {
 	want := ping(42, 1_700_000_000_000)
 	frame, err := Marshal(want)
@@ -37,7 +37,7 @@ func TestCodecRoundTrip(t *testing.T) {
 	}
 }
 
-// T1.2 + T1.3:各种坏输入分别返回什么错。用 errors.Is 判断,不比字符串。
+// 各种坏输入分别返回什么错。用 errors.Is 判断,不比字符串。
 func TestReadFrameErrors(t *testing.T) {
 	frame, err := Marshal(ping(1, 1))
 	if err != nil {

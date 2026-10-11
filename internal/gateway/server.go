@@ -150,7 +150,7 @@ func (s *Server) removeConn(c *Conn) {
 	s.mu.Unlock()
 }
 
-// Count 返回当前连接数。Lab 5 的在线连接数指标从这里取。
+// Count 返回当前连接数(登录了的和没登录的都算),gameserver_connections 指标从这里取。
 func (s *Server) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
