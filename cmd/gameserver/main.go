@@ -127,7 +127,7 @@ func run(logger *slog.Logger, cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	metrics.RegisterGauges(srv.Count, lb.Online, rooms.Count)
+	metrics.SetGaugeSources(srv.Count, lb.Online, rooms.Count)
 	if cfg.adminAddr != "" {
 		stopAdmin, err := serveAdmin(logger, cfg.adminAddr)
 		if err != nil {

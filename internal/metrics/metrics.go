@@ -10,6 +10,7 @@ package metrics
 import (
 	"net/http"
 	"net/http/pprof"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -52,6 +53,9 @@ var (
 	unknownIn, unknownOut = messages.WithLabelValues("in", "none"), messages.WithLabelValues("out", "none")
 )
 
+// 三个 gauge 的取值函数,由 SetGaugeSources 设置。gauge 本身在 init 里注册一次。
+var connections, players, rooms atomic.Pointer[func() int]
+
 func init() {
 	fields := payload.Fields()
 	for i := range fields.Len() {
@@ -59,6 +63,19 @@ func init() {
 		in[f.Number()] = messages.WithLabelValues("in", string(f.Name()))
 		out[f.Number()] = messages.WithLabelValues("out", string(f.Name()))
 	}
+
+	// gauge 的值在被抓取时现算,不用在每次上下线时维护计数,也就不会和真实状态对不上。
+	gauge := func(name, help string, src *atomic.Pointer[func() int]) {
+		promauto.NewGaugeFunc(prometheus.GaugeOpts{Name: name, Help: help}, func() float64 {
+			if f := src.Load(); f != nil {
+				return float64((*f)())
+			}
+			return 0
+		})
+	}
+	gauge("gameserver_connections", "Open TCP connections, logged in or not.", &connections)
+	gauge("gameserver_players_online", "Logged-in players.", &players)
+	gauge("gameserver_rooms", "Rooms that currently exist.", &rooms)
 }
 
 // Received 记一条收到的消息。
@@ -82,15 +99,13 @@ func counter(tab *[64]prometheus.Counter, unknown prometheus.Counter, env *pb.En
 	return unknown
 }
 
-// RegisterGauges 注册三个 gauge。值在被抓取时现算,不用在每次上下线时维护计数,也就不会和真实状态对不上。
-// 一个进程只能调一次(重复注册会 panic)。
-func RegisterGauges(connections, players, rooms func() int) {
-	gauge := func(name, help string, f func() int) {
-		promauto.NewGaugeFunc(prometheus.GaugeOpts{Name: name, Help: help}, func() float64 { return float64(f()) })
-	}
-	gauge("gameserver_connections", "Open TCP connections, logged in or not.", connections)
-	gauge("gameserver_players_online", "Logged-in players.", players)
-	gauge("gameserver_rooms", "Rooms that currently exist.", rooms)
+// SetGaugeSources 设置在线连接数、已登录玩家数、房间数三个 gauge 的取值函数。
+// 可以重复调用,后一次覆盖前一次:gauge 只在 init 里注册一次,同一个名字注册两次 Prometheus 会 panic,
+// 第一版就是在这里注册的,测试用 -count=3 跑到第二遍就 panic 了。
+func SetGaugeSources(conns, loggedIn, roomCount func() int) {
+	connections.Store(&conns)
+	players.Store(&loggedIn)
+	rooms.Store(&roomCount)
 }
 
 // AdminHandler 返回挂着 /metrics 和 /debug/pprof/ 的 handler。

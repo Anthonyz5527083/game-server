@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -39,8 +40,8 @@ func TestMessageCounters(t *testing.T) {
 
 // /metrics 能抓到;所有消息类型一开始就在(值为 0);gauge 每次抓取现算;pprof 挂上了。
 func TestAdminHandler(t *testing.T) {
-	n := 0
-	RegisterGauges(func() int { return 3 }, func() int { n++; return n }, func() int { return 1 })
+	var n atomic.Int64
+	SetGaugeSources(func() int { return 3 }, func() int { return int(n.Add(1)) }, func() int { return 1 })
 
 	srv := httptest.NewServer(AdminHandler())
 	defer srv.Close()
